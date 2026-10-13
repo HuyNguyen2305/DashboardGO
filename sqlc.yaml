@@ -1,0 +1,36 @@
+version: "2"
+sql:
+  - engine: postgresql
+    # sqlc reads the golang-migrate up files and ignores *.down.sql.
+    schema: migrations
+    queries: internal/repository/queries
+    gen:
+      go:
+        package: db
+        out: internal/repository/db
+        sql_package: pgx/v5
+        emit_empty_slices: true
+        emit_pointers_for_null_types: true
+        overrides:
+          - db_type: pg_catalog.numeric
+            go_type: github.com/shopspring/decimal.Decimal
+          - db_type: pg_catalog.numeric
+            nullable: true
+            go_type: github.com/shopspring/decimal.NullDecimal
+          - db_type: pg_catalog.timestamptz
+            go_type: time.Time
+          # Parameters cast with ::timestamptz report the unqualified type name.
+          - db_type: timestamptz
+            go_type: time.Time
+          - db_type: date
+            go_type: time.Time
+          - db_type: date
+            nullable: true
+            go_type:
+              type: time.Time
+              pointer: true
+          - db_type: pg_catalog.timestamptz
+            nullable: true
+            go_type:
+              type: time.Time
+              pointer: true

@@ -1,0 +1,14 @@
+# Regenerate with: go tool mockery
+all: false
+dir: tests/mocks
+pkgname: mocks
+filename: "{{.InterfaceName | snakecase}}.go"
+structname: "Mock{{.InterfaceName}}"
+template: testify
+packages:
+  dashboardgo/internal/service:
+    interfaces:
+      DashboardRepository: {}
+  dashboardgo/internal/handler:
+    interfaces:
+      DashboardService: {}
