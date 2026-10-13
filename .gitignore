@@ -4,3 +4,5 @@
 # Build output
 /bin/
 *.exe
+CLAUDE.md
+/.claude/
