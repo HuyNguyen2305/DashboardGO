@@ -380,8 +380,8 @@ func (_c *MockDashboardService_Invoices_Call) RunAndReturn(run func(ctx context.
 }
 
 // Jobs provides a mock function for the type MockDashboardService
-func (_mock *MockDashboardService) Jobs(ctx context.Context, r daterange.Range, staffIDs []int64) (model.JobsWidget, error) {
-	ret := _mock.Called(ctx, r, staffIDs)
+func (_mock *MockDashboardService) Jobs(ctx context.Context, r daterange.Range, staff model.StaffFilter) (model.JobsWidget, error) {
+	ret := _mock.Called(ctx, r, staff)
 
 	if len(ret) == 0 {
 		panic("no return value specified for Jobs")
@@ -389,16 +389,16 @@ func (_mock *MockDashboardService) Jobs(ctx context.Context, r daterange.Range, 
 
 	var r0 model.JobsWidget
 	var r1 error
-	if returnFunc, ok := ret.Get(0).(func(context.Context, daterange.Range, []int64) (model.JobsWidget, error)); ok {
-		return returnFunc(ctx, r, staffIDs)
+	if returnFunc, ok := ret.Get(0).(func(context.Context, daterange.Range, model.StaffFilter) (model.JobsWidget, error)); ok {
+		return returnFunc(ctx, r, staff)
 	}
-	if returnFunc, ok := ret.Get(0).(func(context.Context, daterange.Range, []int64) model.JobsWidget); ok {
-		r0 = returnFunc(ctx, r, staffIDs)
+	if returnFunc, ok := ret.Get(0).(func(context.Context, daterange.Range, model.StaffFilter) model.JobsWidget); ok {
+		r0 = returnFunc(ctx, r, staff)
 	} else {
 		r0 = ret.Get(0).(model.JobsWidget)
 	}
-	if returnFunc, ok := ret.Get(1).(func(context.Context, daterange.Range, []int64) error); ok {
-		r1 = returnFunc(ctx, r, staffIDs)
+	if returnFunc, ok := ret.Get(1).(func(context.Context, daterange.Range, model.StaffFilter) error); ok {
+		r1 = returnFunc(ctx, r, staff)
 	} else {
 		r1 = ret.Error(1)
 	}
@@ -413,12 +413,12 @@ type MockDashboardService_Jobs_Call struct {
 // Jobs is a helper method to define mock.On call
 //   - ctx context.Context
 //   - r daterange.Range
-//   - staffIDs []int64
-func (_e *MockDashboardService_Expecter) Jobs(ctx any, r any, staffIDs any) *MockDashboardService_Jobs_Call {
-	return &MockDashboardService_Jobs_Call{Call: _e.mock.On("Jobs", ctx, r, staffIDs)}
+//   - staff model.StaffFilter
+func (_e *MockDashboardService_Expecter) Jobs(ctx any, r any, staff any) *MockDashboardService_Jobs_Call {
+	return &MockDashboardService_Jobs_Call{Call: _e.mock.On("Jobs", ctx, r, staff)}
 }
 
-func (_c *MockDashboardService_Jobs_Call) Run(run func(ctx context.Context, r daterange.Range, staffIDs []int64)) *MockDashboardService_Jobs_Call {
+func (_c *MockDashboardService_Jobs_Call) Run(run func(ctx context.Context, r daterange.Range, staff model.StaffFilter)) *MockDashboardService_Jobs_Call {
 	_c.Call.Run(func(args mock.Arguments) {
 		var arg0 context.Context
 		if args[0] != nil {
@@ -428,9 +428,9 @@ func (_c *MockDashboardService_Jobs_Call) Run(run func(ctx context.Context, r da
 		if args[1] != nil {
 			arg1 = args[1].(daterange.Range)
 		}
-		var arg2 []int64
+		var arg2 model.StaffFilter
 		if args[2] != nil {
-			arg2 = args[2].([]int64)
+			arg2 = args[2].(model.StaffFilter)
 		}
 		run(
 			arg0,
@@ -446,7 +446,7 @@ func (_c *MockDashboardService_Jobs_Call) Return(jobsWidget model.JobsWidget, er
 	return _c
 }
 
-func (_c *MockDashboardService_Jobs_Call) RunAndReturn(run func(ctx context.Context, r daterange.Range, staffIDs []int64) (model.JobsWidget, error)) *MockDashboardService_Jobs_Call {
+func (_c *MockDashboardService_Jobs_Call) RunAndReturn(run func(ctx context.Context, r daterange.Range, staff model.StaffFilter) (model.JobsWidget, error)) *MockDashboardService_Jobs_Call {
 	_c.Call.Return(run)
 	return _c
 }

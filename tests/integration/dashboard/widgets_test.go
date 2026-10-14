@@ -4,7 +4,10 @@ package dashboard_test
 
 import (
 	"fmt"
+	"net/http"
 	"testing"
+
+	"github.com/shopspring/decimal"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -24,6 +27,16 @@ func zeroRows(keys ...string) []dto.BreakdownRow {
 	return out
 }
 
+// assertSharesSum100 checks that a widget's percents add up to exactly 100 (or are all 0).
+func assertSharesSum100(t *testing.T, rows []dto.BreakdownRow) {
+	t.Helper()
+	sum := decimal.Zero
+	for _, r := range rows {
+		sum = sum.Add(decimal.NewFromFloat(r.Percent))
+	}
+	assert.True(t, sum.Equal(decimal.NewFromInt(100)), "percents sum to %s", sum)
+}
+
 // dayCounts indexes the daily chart by date for spot checks.
 func dayCounts(daily []dto.DailyCounts) map[string]map[string]int64 {
 	out := make(map[string]map[string]int64, len(daily))
@@ -40,6 +53,7 @@ func TestDashboardWidgets(t *testing.T) {
 	t.Run("jobs, all schedules", func(t *testing.T) {
 		var got dto.JobsResponse
 		env.getJSON(t, "/api/v1/dashboard/jobs", &got)
+		assertSharesSum100(t, got.Rows)
 
 		// Screenshot: $2,360.54; 55% / 42% / 3% by count.
 		assert.Equal(t, october, got.Range)
@@ -80,6 +94,9 @@ func TestDashboardWidgets(t *testing.T) {
 			{"Thọ only", fmt.Sprintf("?staff_ids=%d", tho), 14, "924.30"},
 			{"Thọ and User", fmt.Sprintf("?staff_ids=%d,%d", tho, user), 30, "2099.36"},
 			{"schedule with no jobs", fmt.Sprintf("?staff_ids=%d", sched3), 0, "0.00"},
+			// October jobs with no staff: 76.18 incomplete, 65.00 terminated, 120.00 incomplete.
+			{"unassigned only", "?staff_ids=unassigned", 3, "261.18"},
+			{"Thọ and unassigned", fmt.Sprintf("?staff_ids=%d,unassigned", tho), 17, "1185.48"},
 		}
 		for _, tc := range cases {
 			t.Run(tc.name, func(t *testing.T) {
@@ -95,6 +112,7 @@ func TestDashboardWidgets(t *testing.T) {
 	t.Run("invoices", func(t *testing.T) {
 		var got dto.BreakdownResponse
 		env.getJSON(t, "/api/v1/dashboard/invoices", &got)
+		assertSharesSum100(t, got.Rows)
 
 		// Screenshot: $2,931.04; 47% / 2% / 19% / 32% by amount.
 		assert.Equal(t, dto.BreakdownResponse{
@@ -102,10 +120,9 @@ func TestDashboardWidgets(t *testing.T) {
 			TotalAmount: "2931.04",
 			TotalCount:  5,
 			Rows: []dto.BreakdownRow{
-				row("draft", 1, "1378.64", 47.04),
+				row("draft", 1, "1378.64", 47.03), // largest remainder: on their own the shares sum to 100.01
 				row("void", 1, "65.00", 2.22),
 				row("sent", 1, "555.14", 18.94),
-				row("partial", 0, "0.00", 0),
 				row("partial_paid", 0, "0.00", 0),
 				row("paid", 2, "932.26", 31.81),
 				row("write_off", 0, "0.00", 0),
@@ -135,13 +152,15 @@ func TestDashboardWidgets(t *testing.T) {
 	t.Run("invoices aging as of today", func(t *testing.T) {
 		var got dto.AgingResponse
 		env.getJSON(t, "/api/v1/dashboard/invoices/aging", &got)
+		assertSharesSum100(t, got.Rows)
 
 		assert.Equal(t, dto.AgingResponse{
 			AsOf:        "2026-10-12",
 			TotalAmount: "972.91",
 			TotalCount:  6,
 			Rows: []dto.BreakdownRow{
-				row("0_30", 3, "657.91", 67.62),    // INV-1 555.14 (no due date) + INV-A1 92.77 (not due) + INV-A6 10.00 (30 days)
+				row("current", 1, "92.77", 9.53),   // INV-A1, due Oct 20: not due yet (9.535%, gives up the spare 0.01)
+				row("1_30", 2, "565.14", 58.09),    // INV-1 555.14 (no due date, 9 days) + INV-A6 10.00 (30 days)
 				row("31_60", 1, "20.00", 2.06),     // INV-A7, 31 days
 				row("61_90", 1, "95.00", 9.76),     // INV-A2, 84 days
 				row("90_plus", 1, "200.00", 20.56), // INV-A3 balance after a 100.00 payment
@@ -176,36 +195,51 @@ func TestDashboardWidgets(t *testing.T) {
 		env.getJSON(t, "/api/v1/dashboard/sales-forecast", &got) // defaults to the current year
 
 		assert.Equal(t, dto.DateRange{Preset: "year", Start: "2026-01-01", End: "2026-12-31"}, got.Range)
-		assert.Equal(t, "3559.62", got.Total)
-		assert.Equal(t, "2209.62", got.Months[9].Amount, "October must equal Total New Jobs in the Stats row")
-		assert.Equal(t, "150.00", got.Months[10].Amount)
-		assert.Equal(t, "305.00", got.Months[7].Amount)
+		// Booked jobs per scheduled month: October is every October job but the terminated 65.00
+		// (the Jobs widget's 2360.54 - 65.00); November is the completed 50.00 job.
+		assert.Equal(t, "2345.54", got.Total)
+		for i, m := range got.Months {
+			want := "0.00"
+			switch m.Month {
+			case "2026-10":
+				want = "2295.54"
+			case "2026-11":
+				want = "50.00"
+			}
+			assert.Equal(t, want, got.Months[i].Amount, m.Month)
+		}
 	})
 
 	t.Run("payments", func(t *testing.T) {
 		cases := []struct {
-			name  string
-			query string
-			want  dto.BreakdownResponse
+			name       string
+			query      string
+			before2026 bool // serve with the clock in February 2025
+			want       dto.BreakdownResponse
 		}{
-			{"october, biggest first", "", dto.BreakdownResponse{
+			{"october, biggest first", "", false, dto.BreakdownResponse{
 				Range: october, TotalAmount: "867.26", TotalCount: 12,
-				Rows: []dto.BreakdownRow{row("check", 11, "715.00", 82.44), row("stripe", 1, "152.26", 17.56)},
+				Rows: append([]dto.BreakdownRow{row("check", 11, "715.00", 82.44), row("stripe", 1, "152.26", 17.56)},
+					zeroRows("card", "cash", "other")...),
 			}},
-			{"september", "?range=last_month", dto.BreakdownResponse{
+			{"september", "?range=last_month", false, dto.BreakdownResponse{
 				Range:       dto.DateRange{Preset: "last_month", Start: "2026-09-01", End: "2026-09-30"},
 				TotalAmount: "99.00", TotalCount: 1,
-				Rows: []dto.BreakdownRow{row("check", 1, "99.00", 100)},
+				Rows: append([]dto.BreakdownRow{row("check", 1, "99.00", 100)}, zeroRows("card", "cash", "other", "stripe")...),
 			}},
-			{"no payments", "?from=2025-01-01&to=2025-01-31", dto.BreakdownResponse{
-				Range:       dto.DateRange{Preset: "custom", Start: "2025-01-01", End: "2025-01-31"},
-				TotalAmount: "0.00", TotalCount: 0, Rows: []dto.BreakdownRow{},
+			{"no payments", "?range=last_month", true, dto.BreakdownResponse{
+				Range:       dto.DateRange{Preset: "last_month", Start: "2025-01-01", End: "2025-01-31"},
+				TotalAmount: "0.00", TotalCount: 0, Rows: zeroRows("card", "cash", "check", "other", "stripe"),
 			}},
 		}
 		for _, tc := range cases {
 			t.Run(tc.name, func(t *testing.T) {
+				e := env
+				if tc.before2026 {
+					e = env.before2026(t)
+				}
 				var got dto.BreakdownResponse
-				env.getJSON(t, "/api/v1/dashboard/payments"+tc.query, &got)
+				e.getJSON(t, "/api/v1/dashboard/payments"+tc.query, &got)
 				assert.Equal(t, tc.want, got)
 			})
 		}
@@ -213,9 +247,15 @@ func TestDashboardWidgets(t *testing.T) {
 
 	t.Run("secondary widgets", func(t *testing.T) { testSecondaryWidgets(t, env) })
 
+	t.Run("bracketed staff_ids is rejected instead of returning every schedule", func(t *testing.T) {
+		status, body := env.getStatus(t, "/api/v1/dashboard/jobs?staff_ids[]=1")
+		assert.Equal(t, http.StatusBadRequest, status)
+		assert.Contains(t, body, `unknown query parameter \"staff_ids[]\"`)
+	})
+
 	t.Run("empty range keeps every status row", func(t *testing.T) {
 		var got dto.BreakdownResponse
-		env.getJSON(t, "/api/v1/dashboard/estimates?from=2025-01-01&to=2025-01-31", &got)
+		env.before2026(t).getJSON(t, "/api/v1/dashboard/estimates?range=last_month", &got)
 		assert.Equal(t, zeroRows("draft", "pending", "won", "invoiced", "lost"), got.Rows)
 		assert.Equal(t, "0.00", got.TotalAmount)
 	})

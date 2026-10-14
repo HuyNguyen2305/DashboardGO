@@ -63,16 +63,20 @@ func run(stdin io.Reader, stderr io.Writer) int {
 	for _, c := range fmthook.Commands(file, projectDir, statErr == nil) {
 		cmd := exec.CommandContext(ctx, c.Name, c.Args...) //nolint:gosec // G204: programs and args come from fmthook.Commands, not from user input
 		cmd.Dir = c.Dir
-		var out bytes.Buffer
+		var stdout, out bytes.Buffer
 		cmd.Stdout, cmd.Stderr = &out, &out
+		if c.OnlyFile != "" {
+			cmd.Stdout = &stdout // the JSON report; text output goes to out via stderr
+		}
 
 		err := cmd.Run()
 		var exitErr *exec.ExitError
 		switch {
 		case err == nil:
 		case errors.As(err, &exitErr):
-			problems = append(problems, fmt.Sprintf("%s %s:\n%s",
-				c.Name, strings.Join(c.Args, " "), strings.TrimSpace(out.String())))
+			if p := problem(c, stdout.Bytes(), out.String()); p != "" {
+				problems = append(problems, p)
+			}
 		default:
 			fmt.Fprintf(stderr, "fmthook: could not run %s: %v\n", c.Name, err)
 			return 1
@@ -89,6 +93,24 @@ func run(stdin io.Reader, stderr io.Writer) int {
 		return 2
 	}
 	return 0
+}
+
+// problem describes a failed command for Claude, or returns "" when a filtered lint run only
+// found issues in files other than the edited one.
+func problem(c fmthook.Command, report []byte, output string) string {
+	header := c.Name + " " + strings.Join(c.Args, " ") + ":\n"
+	if c.OnlyFile == "" {
+		return header + strings.TrimSpace(output)
+	}
+	issues, total, err := fmthook.IssuesFor(report, c.OnlyFile)
+	switch {
+	case err != nil || total == 0:
+		// No usable report: golangci-lint itself failed, e.g. the package doesn't type-check.
+		return header + strings.TrimSpace(output)
+	case len(issues) == 0:
+		return "" // issues only in other files of the package; go tool task check reports those
+	}
+	return header + strings.Join(issues, "\n")
 }
 
 // cleanAbs returns dir cleaned, and false unless it is a non-empty absolute path.

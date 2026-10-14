@@ -3,22 +3,76 @@ package repository
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
+
+	"github.com/jackc/pgx/v5"
 
 	"dashboardgo/internal/model"
 	"dashboardgo/internal/repository/db"
 )
 
+// Conn runs queries and starts transactions. The shared *pgxpool.Pool satisfies it.
+type Conn interface {
+	db.DBTX
+	BeginTx(ctx context.Context, opts pgx.TxOptions) (pgx.Tx, error)
+}
+
 // DashboardRepository reads dashboard aggregates.
 type DashboardRepository struct {
+	conn    Conn
 	q       *db.Queries
 	timeout time.Duration
 }
 
-// NewDashboardRepository uses conn (usually the shared pool) and caps every query at timeout.
-func NewDashboardRepository(conn db.DBTX, timeout time.Duration) *DashboardRepository {
-	return &DashboardRepository{q: db.New(conn), timeout: timeout}
+// NewDashboardRepository uses conn (the shared pool) and caps every query at timeout.
+func NewDashboardRepository(conn Conn, timeout time.Duration) *DashboardRepository {
+	return &DashboardRepository{conn: conn, q: db.New(conn), timeout: timeout}
+}
+
+// txKey carries the open transaction in the context passed to WithTx's fn.
+type txKey struct{}
+
+// WithTx runs fn in one transaction: every repository call made with the ctx given to fn
+// uses it. It commits when fn returns nil and rolls back otherwise. A nested call joins the
+// transaction already open.
+func (r *DashboardRepository) WithTx(ctx context.Context, opts model.TxOptions, fn func(ctx context.Context) error) error {
+	if _, ok := ctx.Value(txKey{}).(pgx.Tx); ok {
+		return fn(ctx)
+	}
+
+	pgOpts := pgx.TxOptions{}
+	if opts.ReadOnly {
+		pgOpts.AccessMode = pgx.ReadOnly
+	}
+	if opts.Snapshot {
+		pgOpts.IsoLevel = pgx.RepeatableRead
+	}
+	tx, err := r.conn.BeginTx(ctx, pgOpts)
+	if err != nil {
+		return fmt.Errorf("begin transaction: %w", err)
+	}
+
+	if err := fn(context.WithValue(ctx, txKey{}, tx)); err != nil {
+		// Roll back even if ctx was canceled, so the connection goes back to the pool clean.
+		if rbErr := tx.Rollback(context.WithoutCancel(ctx)); rbErr != nil && !errors.Is(rbErr, pgx.ErrTxClosed) {
+			return errors.Join(err, fmt.Errorf("rollback: %w", rbErr))
+		}
+		return err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("commit transaction: %w", err)
+	}
+	return nil
+}
+
+// queries returns the queries bound to the transaction in ctx, if any.
+func (r *DashboardRepository) queries(ctx context.Context) *db.Queries {
+	if tx, ok := ctx.Value(txKey{}).(pgx.Tx); ok {
+		return r.q.WithTx(tx)
+	}
+	return r.q
 }
 
 // Stats returns the top Stats row in a single query.
@@ -26,12 +80,13 @@ func (r *DashboardRepository) Stats(ctx context.Context, sq model.StatsQuery) (m
 	ctx, cancel := context.WithTimeout(ctx, r.timeout)
 	defer cancel()
 
-	row, err := r.q.GetDashboardStats(ctx, db.GetDashboardStatsParams{
-		StartAt:                  sq.Start,
-		EndAt:                    sq.End,
-		RevenueStatuses:          sq.RevenueStatuses,
-		ForecastEstimateStatuses: sq.ForecastEstimateStatuses,
-		ForecastInvoiceStatuses:  sq.ForecastInvoiceStatuses,
+	row, err := r.queries(ctx).GetDashboardStats(ctx, db.GetDashboardStatsParams{
+		StartAt:                 sq.Start,
+		EndAt:                   sq.End,
+		RevenueStatuses:         sq.RevenueStatuses,
+		NewJobsEstimateStatuses: sq.NewJobsEstimateStatuses,
+		NewJobsInvoiceStatuses:  sq.NewJobsInvoiceStatuses,
+		OnlineJobStatuses:       sq.OnlineJobStatuses,
 	})
 	if err != nil {
 		return model.DashboardStats{}, fmt.Errorf("get dashboard stats: %w", err)
@@ -50,8 +105,8 @@ func (r *DashboardRepository) JobStatusBreakdown(ctx context.Context, q model.Jo
 	ctx, cancel := context.WithTimeout(ctx, r.timeout)
 	defer cancel()
 
-	rows, err := r.q.JobStatusBreakdown(ctx, db.JobStatusBreakdownParams{
-		StartAt: q.Start, EndAt: q.End, StaffIds: nonNil(q.StaffIDs),
+	rows, err := r.queries(ctx).JobStatusBreakdown(ctx, db.JobStatusBreakdownParams{
+		StartAt: q.Start, EndAt: q.End, StaffIds: nonNil(q.Staff.IDs), IncludeUnassigned: q.Staff.Unassigned,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("job status breakdown: %w", err)
@@ -68,8 +123,8 @@ func (r *DashboardRepository) JobDailyCounts(ctx context.Context, q model.JobsQu
 	ctx, cancel := context.WithTimeout(ctx, r.timeout)
 	defer cancel()
 
-	rows, err := r.q.JobDailyCounts(ctx, db.JobDailyCountsParams{
-		StartAt: q.Start, EndAt: q.End, Tz: q.TZ, StaffIds: nonNil(q.StaffIDs),
+	rows, err := r.queries(ctx).JobDailyCounts(ctx, db.JobDailyCountsParams{
+		StartAt: q.Start, EndAt: q.End, Tz: q.TZ, StaffIds: nonNil(q.Staff.IDs), IncludeUnassigned: q.Staff.Unassigned,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("job daily counts: %w", err)
@@ -86,7 +141,7 @@ func (r *DashboardRepository) DocumentStatusBreakdown(ctx context.Context, q mod
 	ctx, cancel := context.WithTimeout(ctx, r.timeout)
 	defer cancel()
 
-	rows, err := r.q.DocumentStatusBreakdown(ctx, db.DocumentStatusBreakdownParams{
+	rows, err := r.queries(ctx).DocumentStatusBreakdown(ctx, db.DocumentStatusBreakdownParams{
 		DocType: q.DocType, StartAt: q.Start, EndAt: q.End,
 	})
 	if err != nil {
@@ -104,7 +159,7 @@ func (r *DashboardRepository) InvoiceAging(ctx context.Context, q model.AgingQue
 	ctx, cancel := context.WithTimeout(ctx, r.timeout)
 	defer cancel()
 
-	rows, err := r.q.InvoiceAging(ctx, db.InvoiceAgingParams{AsOf: q.AsOf, Tz: q.TZ, Statuses: q.Statuses})
+	rows, err := r.queries(ctx).InvoiceAging(ctx, db.InvoiceAgingParams{AsOf: q.AsOf, Tz: q.TZ, Statuses: q.Statuses})
 	if err != nil {
 		return nil, fmt.Errorf("invoice aging: %w", err)
 	}
@@ -120,7 +175,7 @@ func (r *DashboardRepository) MonthlyRevenue(ctx context.Context, q model.Monthl
 	ctx, cancel := context.WithTimeout(ctx, r.timeout)
 	defer cancel()
 
-	rows, err := r.q.MonthlyRevenue(ctx, db.MonthlyRevenueParams{
+	rows, err := r.queries(ctx).MonthlyRevenue(ctx, db.MonthlyRevenueParams{
 		StartAt: q.Start, EndAt: q.End, Tz: q.TZ, RevenueStatuses: q.RevenueStatuses,
 	})
 	if err != nil {
@@ -133,15 +188,13 @@ func (r *DashboardRepository) MonthlyRevenue(ctx context.Context, q model.Monthl
 	return out, nil
 }
 
-// MonthlyForecast returns the sales forecast per local month, only for months that have data.
+// MonthlyForecast returns the booked jobs' total per local month, only for months that have jobs.
 func (r *DashboardRepository) MonthlyForecast(ctx context.Context, q model.MonthlyQuery) ([]model.MonthlyAmount, error) {
 	ctx, cancel := context.WithTimeout(ctx, r.timeout)
 	defer cancel()
 
-	rows, err := r.q.MonthlyForecast(ctx, db.MonthlyForecastParams{
-		StartAt: q.Start, EndAt: q.End, Tz: q.TZ,
-		ForecastEstimateStatuses: q.ForecastEstimateStatuses,
-		ForecastInvoiceStatuses:  q.ForecastInvoiceStatuses,
+	rows, err := r.queries(ctx).MonthlyForecast(ctx, db.MonthlyForecastParams{
+		StartAt: q.Start, EndAt: q.End, Tz: q.TZ, JobStatuses: q.JobStatuses,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("monthly forecast: %w", err)
@@ -158,7 +211,7 @@ func (r *DashboardRepository) PaymentsByMethod(ctx context.Context, q model.Peri
 	ctx, cancel := context.WithTimeout(ctx, r.timeout)
 	defer cancel()
 
-	rows, err := r.q.PaymentsByMethod(ctx, db.PaymentsByMethodParams{StartAt: q.Start, EndAt: q.End})
+	rows, err := r.queries(ctx).PaymentsByMethod(ctx, db.PaymentsByMethodParams{StartAt: q.Start, EndAt: q.End})
 	if err != nil {
 		return nil, fmt.Errorf("payments by method: %w", err)
 	}
@@ -174,7 +227,7 @@ func (r *DashboardRepository) RevenueByStaff(ctx context.Context, q model.StatsQ
 	ctx, cancel := context.WithTimeout(ctx, r.timeout)
 	defer cancel()
 
-	rows, err := r.q.RevenueByStaff(ctx, db.RevenueByStaffParams{
+	rows, err := r.queries(ctx).RevenueByStaff(ctx, db.RevenueByStaffParams{
 		StartAt: q.Start, EndAt: q.End, RevenueStatuses: q.RevenueStatuses,
 	})
 	if err != nil {
@@ -195,7 +248,7 @@ func (r *DashboardRepository) ActiveServices(ctx context.Context, q model.Servic
 	ctx, cancel := context.WithTimeout(ctx, r.timeout)
 	defer cancel()
 
-	rows, err := r.q.ActiveServices(ctx, db.ActiveServicesParams{StartAt: q.Start, EndAt: q.End, Statuses: q.Statuses})
+	rows, err := r.queries(ctx).ActiveServices(ctx, db.ActiveServicesParams{StartAt: q.Start, EndAt: q.End, Statuses: q.Statuses})
 	if err != nil {
 		return nil, fmt.Errorf("active services: %w", err)
 	}
@@ -203,10 +256,22 @@ func (r *DashboardRepository) ActiveServices(ctx context.Context, q model.Servic
 	for i, row := range rows {
 		out[i] = model.ServiceRow{
 			ServiceID: row.ServiceID, Name: deref(row.ServiceName), IsRecurring: row.IsRecurring,
-			Count: row.Count, Amount: row.Amount,
+			Count: row.Count, CustomerCount: row.CustomerCount, Amount: row.Amount,
 		}
 	}
 	return out, nil
+}
+
+// ActiveServiceCustomers counts the distinct customers with jobs in the given statuses, overall and on recurring services.
+func (r *DashboardRepository) ActiveServiceCustomers(ctx context.Context, q model.ServicesQuery) (model.ServiceCustomers, error) {
+	ctx, cancel := context.WithTimeout(ctx, r.timeout)
+	defer cancel()
+
+	row, err := r.queries(ctx).ActiveServiceCustomers(ctx, db.ActiveServiceCustomersParams{StartAt: q.Start, EndAt: q.End, Statuses: q.Statuses})
+	if err != nil {
+		return model.ServiceCustomers{}, fmt.Errorf("active service customers: %w", err)
+	}
+	return model.ServiceCustomers{CustomerCount: row.CustomerCount, RecurringCustomerCount: row.RecurringCustomerCount}, nil
 }
 
 // TagUsage returns how often each tag in use is applied within scope, most used first.
@@ -217,20 +282,20 @@ func (r *DashboardRepository) TagUsage(ctx context.Context, scope string) ([]mod
 	var out []model.TagRow
 	switch scope {
 	case model.TagScopeCustomer:
-		rows, err := r.q.CustomerTagUsage(ctx)
+		rows, err := r.queries(ctx).CustomerTagUsage(ctx)
 		if err != nil {
 			return nil, fmt.Errorf("customer tag usage: %w", err)
 		}
 		for _, row := range rows {
-			out = append(out, model.TagRow{TagID: row.ID, Name: row.Name, Count: row.Count})
+			out = append(out, model.TagRow{TagID: &row.ID, Name: row.Name, Count: row.Count})
 		}
 	case model.TagScopeLocation:
-		rows, err := r.q.LocationTagUsage(ctx)
+		rows, err := r.queries(ctx).LocationTagUsage(ctx)
 		if err != nil {
 			return nil, fmt.Errorf("location tag usage: %w", err)
 		}
 		for _, row := range rows {
-			out = append(out, model.TagRow{TagID: row.ID, Name: row.Name, Count: row.Count})
+			out = append(out, model.TagRow{TagID: &row.ID, Name: row.Name, Count: row.Count, CustomerCount: &row.CustomerCount})
 		}
 	default:
 		return nil, fmt.Errorf("%w: %q", model.ErrInvalidScope, scope)
@@ -243,7 +308,7 @@ func (r *DashboardRepository) CustomersBySource(ctx context.Context, q model.Mon
 	ctx, cancel := context.WithTimeout(ctx, r.timeout)
 	defer cancel()
 
-	rows, err := r.q.CustomersBySource(ctx, db.CustomersBySourceParams{StartAt: q.Start, EndAt: q.End, Tz: q.TZ})
+	rows, err := r.queries(ctx).CustomersBySource(ctx, db.CustomersBySourceParams{StartAt: q.Start, EndAt: q.End, Tz: q.TZ})
 	if err != nil {
 		return nil, fmt.Errorf("customers by source: %w", err)
 	}

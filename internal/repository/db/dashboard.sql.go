@@ -12,11 +12,41 @@ import (
 	"github.com/shopspring/decimal"
 )
 
+const activeServiceCustomers = `-- name: ActiveServiceCustomers :one
+SELECT count(DISTINCT j.customer_id)::bigint                                AS customer_count,
+       count(DISTINCT j.customer_id) FILTER (WHERE sv.is_recurring)::bigint AS recurring_customer_count
+  FROM jobs j
+  LEFT JOIN services sv ON sv.id = j.service_id
+ WHERE j.status = ANY($1::text[])
+   AND j.scheduled_at >= $2::timestamptz AND j.scheduled_at < $3::timestamptz
+`
+
+type ActiveServiceCustomersParams struct {
+	Statuses []string
+	StartAt  time.Time
+	EndAt    time.Time
+}
+
+type ActiveServiceCustomersRow struct {
+	CustomerCount          int64
+	RecurringCustomerCount int64
+}
+
+// Active Services footer: distinct customers overall and with a recurring service. A customer with
+// several services counts once, so these can't be summed from the per-service rows.
+func (q *Queries) ActiveServiceCustomers(ctx context.Context, arg ActiveServiceCustomersParams) (ActiveServiceCustomersRow, error) {
+	row := q.db.QueryRow(ctx, activeServiceCustomers, arg.Statuses, arg.StartAt, arg.EndAt)
+	var i ActiveServiceCustomersRow
+	err := row.Scan(&i.CustomerCount, &i.RecurringCustomerCount)
+	return i, err
+}
+
 const activeServices = `-- name: ActiveServices :many
 SELECT sv.id                               AS service_id,
        sv.name                             AS service_name,
        coalesce(sv.is_recurring, false)::boolean AS is_recurring,
        count(*)::bigint                    AS count,
+       count(DISTINCT j.customer_id)::bigint AS customer_count,
        coalesce(sum(j.total), 0)::numeric  AS amount
   FROM jobs j
   LEFT JOIN services sv ON sv.id = j.service_id
@@ -33,14 +63,16 @@ type ActiveServicesParams struct {
 }
 
 type ActiveServicesRow struct {
-	ServiceID   *int64
-	ServiceName *string
-	IsRecurring bool
-	Count       int64
-	Amount      decimal.Decimal
+	ServiceID     *int64
+	ServiceName   *string
+	IsRecurring   bool
+	Count         int64
+	CustomerCount int64
+	Amount        decimal.Decimal
 }
 
 // Active Services: jobs in the given statuses grouped by service. A NULL service is the "No service" row.
+// count is visits (jobs); customer_count is the distinct customers behind them.
 func (q *Queries) ActiveServices(ctx context.Context, arg ActiveServicesParams) ([]ActiveServicesRow, error) {
 	rows, err := q.db.Query(ctx, activeServices, arg.Statuses, arg.StartAt, arg.EndAt)
 	if err != nil {
@@ -55,6 +87,7 @@ func (q *Queries) ActiveServices(ctx context.Context, arg ActiveServicesParams) 
 			&i.ServiceName,
 			&i.IsRecurring,
 			&i.Count,
+			&i.CustomerCount,
 			&i.Amount,
 		); err != nil {
 			return nil, err
@@ -191,7 +224,7 @@ func (q *Queries) DocumentStatusBreakdown(ctx context.Context, arg DocumentStatu
 
 const getDashboardStats = `-- name: GetDashboardStats :one
 SELECT
-    (SELECT coalesce(sum(d.total), 0)
+    (SELECT coalesce(sum(d.subtotal), 0)
        FROM documents d
       WHERE d.doc_type = 'invoice'
         AND d.status = ANY($1::text[])
@@ -203,15 +236,17 @@ SELECT
       WHERE p.received_at >= $2::timestamptz AND p.received_at < $3::timestamptz
     )::numeric AS collected,
 
+    -- By when the job was finished, not when it was scheduled.
     (SELECT count(*)
        FROM jobs j
       WHERE j.status = 'completed'
-        AND j.scheduled_at >= $2::timestamptz AND j.scheduled_at < $3::timestamptz
+        AND j.completed_at >= $2::timestamptz AND j.completed_at < $3::timestamptz
     )::bigint AS jobs_completed,
 
     (SELECT coalesce(sum(j.total), 0)
        FROM jobs j
       WHERE j.booked_online
+        AND j.status = ANY($4::text[])
         AND j.created_at >= $2::timestamptz AND j.created_at < $3::timestamptz
     )::numeric AS new_jobs_booked_online,
 
@@ -219,18 +254,19 @@ SELECT
     (SELECT coalesce(sum(d.total), 0)
        FROM documents d
       WHERE d.issued_at >= $2::timestamptz AND d.issued_at < $3::timestamptz
-        AND (   (d.doc_type = 'estimate' AND d.status = ANY($4::text[]))
-             OR (d.doc_type = 'invoice'  AND d.status = ANY($5::text[])
+        AND (   (d.doc_type = 'estimate' AND d.status = ANY($5::text[]))
+             OR (d.doc_type = 'invoice'  AND d.status = ANY($6::text[])
                                          AND d.source_document_id IS NULL))
     )::numeric AS total_new_jobs
 `
 
 type GetDashboardStatsParams struct {
-	RevenueStatuses          []string
-	StartAt                  time.Time
-	EndAt                    time.Time
-	ForecastEstimateStatuses []string
-	ForecastInvoiceStatuses  []string
+	RevenueStatuses         []string
+	StartAt                 time.Time
+	EndAt                   time.Time
+	OnlineJobStatuses       []string
+	NewJobsEstimateStatuses []string
+	NewJobsInvoiceStatuses  []string
 }
 
 type GetDashboardStatsRow struct {
@@ -243,13 +279,15 @@ type GetDashboardStatsRow struct {
 
 // Top Stats row. One scalar subquery per metric keeps it to a single round trip.
 // Every range is half-open: [start_at, end_at).
+// Revenue is the subtotal (tax excluded); Total New Jobs is a sales figure and uses the total.
 func (q *Queries) GetDashboardStats(ctx context.Context, arg GetDashboardStatsParams) (GetDashboardStatsRow, error) {
 	row := q.db.QueryRow(ctx, getDashboardStats,
 		arg.RevenueStatuses,
 		arg.StartAt,
 		arg.EndAt,
-		arg.ForecastEstimateStatuses,
-		arg.ForecastInvoiceStatuses,
+		arg.OnlineJobStatuses,
+		arg.NewJobsEstimateStatuses,
+		arg.NewJobsInvoiceStatuses,
 	)
 	var i GetDashboardStatsRow
 	err := row.Scan(
@@ -272,7 +310,8 @@ WITH aged AS (
        AND d.balance > 0
 )
 SELECT (CASE
-          WHEN aged.age <= 30 THEN '0_30'
+          WHEN aged.age <= 0  THEN 'current'
+          WHEN aged.age <= 30 THEN '1_30'
           WHEN aged.age <= 60 THEN '31_60'
           WHEN aged.age <= 90 THEN '61_90'
           ELSE '90_plus'
@@ -296,7 +335,7 @@ type InvoiceAgingRow struct {
 }
 
 // Outstanding balances bucketed by days past due as of a local date.
-// Invoices without a due date age from their local issue date; not yet due counts as 0 days.
+// Invoices without a due date age from their local issue date. Not yet due (age <= 0) is "current".
 // sqlc.arg() instead of @name: sqlc mis-rewrites two @params inside nested casts on one line.
 func (q *Queries) InvoiceAging(ctx context.Context, arg InvoiceAgingParams) ([]InvoiceAgingRow, error) {
 	rows, err := q.db.Query(ctx, invoiceAging, arg.AsOf, arg.Tz, arg.Statuses)
@@ -324,16 +363,19 @@ SELECT (j.scheduled_at AT TIME ZONE $1::text)::date AS day,
        count(*)::bigint AS count
   FROM jobs j
  WHERE j.scheduled_at >= $2::timestamptz AND j.scheduled_at < $3::timestamptz
-   AND (cardinality($4::bigint[]) = 0 OR j.staff_id = ANY($4::bigint[]))
+   AND (   (cardinality($4::bigint[]) = 0 AND NOT $5::boolean)
+        OR j.staff_id = ANY($4::bigint[])
+        OR ($5::boolean AND j.staff_id IS NULL))
  GROUP BY day, j.status
  ORDER BY day, j.status
 `
 
 type JobDailyCountsParams struct {
-	Tz       string
-	StartAt  time.Time
-	EndAt    time.Time
-	StaffIds []int64
+	Tz                string
+	StartAt           time.Time
+	EndAt             time.Time
+	StaffIds          []int64
+	IncludeUnassigned bool
 }
 
 type JobDailyCountsRow struct {
@@ -349,6 +391,7 @@ func (q *Queries) JobDailyCounts(ctx context.Context, arg JobDailyCountsParams) 
 		arg.StartAt,
 		arg.EndAt,
 		arg.StaffIds,
+		arg.IncludeUnassigned,
 	)
 	if err != nil {
 		return nil, err
@@ -374,14 +417,17 @@ SELECT j.status,
        coalesce(sum(j.total), 0)::numeric AS amount
   FROM jobs j
  WHERE j.scheduled_at >= $1::timestamptz AND j.scheduled_at < $2::timestamptz
-   AND (cardinality($3::bigint[]) = 0 OR j.staff_id = ANY($3::bigint[]))
+   AND (   (cardinality($3::bigint[]) = 0 AND NOT $4::boolean)
+        OR j.staff_id = ANY($3::bigint[])
+        OR ($4::boolean AND j.staff_id IS NULL))
  GROUP BY j.status
 `
 
 type JobStatusBreakdownParams struct {
-	StartAt  time.Time
-	EndAt    time.Time
-	StaffIds []int64
+	StartAt           time.Time
+	EndAt             time.Time
+	StaffIds          []int64
+	IncludeUnassigned bool
 }
 
 type JobStatusBreakdownRow struct {
@@ -390,9 +436,15 @@ type JobStatusBreakdownRow struct {
 	Amount decimal.Decimal
 }
 
-// Jobs widget rows. An empty staff_ids array means all schedules.
+// Jobs widget rows: jobs scheduled in the period. No staff_ids and no include_unassigned means all schedules;
+// include_unassigned adds jobs with no staff.
 func (q *Queries) JobStatusBreakdown(ctx context.Context, arg JobStatusBreakdownParams) ([]JobStatusBreakdownRow, error) {
-	rows, err := q.db.Query(ctx, jobStatusBreakdown, arg.StartAt, arg.EndAt, arg.StaffIds)
+	rows, err := q.db.Query(ctx, jobStatusBreakdown,
+		arg.StartAt,
+		arg.EndAt,
+		arg.StaffIds,
+		arg.IncludeUnassigned,
+	)
 	if err != nil {
 		return nil, err
 	}
@@ -412,21 +464,23 @@ func (q *Queries) JobStatusBreakdown(ctx context.Context, arg JobStatusBreakdown
 }
 
 const locationTagUsage = `-- name: LocationTagUsage :many
-SELECT t.id, t.name, count(*)::bigint AS count
+SELECT t.id, t.name, count(*)::bigint AS count, count(DISTINCT l.customer_id)::bigint AS customer_count
   FROM tags t
   JOIN location_tags lt ON lt.tag_id = t.id
+  JOIN locations l ON l.id = lt.location_id
  WHERE t.scope = 'location'
  GROUP BY t.id, t.name
  ORDER BY count DESC, t.name
 `
 
 type LocationTagUsageRow struct {
-	ID    int64
-	Name  string
-	Count int64
+	ID            int64
+	Name          string
+	Count         int64
+	CustomerCount int64
 }
 
-// Tags widget, Location scope: how many locations carry each tag in use.
+// Tags widget, Location scope: how many locations carry each tag in use, and how many distinct customers own them.
 func (q *Queries) LocationTagUsage(ctx context.Context) ([]LocationTagUsageRow, error) {
 	rows, err := q.db.Query(ctx, locationTagUsage)
 	if err != nil {
@@ -436,7 +490,12 @@ func (q *Queries) LocationTagUsage(ctx context.Context) ([]LocationTagUsageRow, 
 	items := []LocationTagUsageRow{}
 	for rows.Next() {
 		var i LocationTagUsageRow
-		if err := rows.Scan(&i.ID, &i.Name, &i.Count); err != nil {
+		if err := rows.Scan(
+			&i.ID,
+			&i.Name,
+			&i.Count,
+			&i.CustomerCount,
+		); err != nil {
 			return nil, err
 		}
 		items = append(items, i)
@@ -448,23 +507,20 @@ func (q *Queries) LocationTagUsage(ctx context.Context) ([]LocationTagUsageRow, 
 }
 
 const monthlyForecast = `-- name: MonthlyForecast :many
-SELECT date_trunc('month', d.issued_at AT TIME ZONE $1::text)::date AS month,
-       coalesce(sum(d.total), 0)::numeric                       AS amount
-  FROM documents d
- WHERE d.issued_at >= $2::timestamptz AND d.issued_at < $3::timestamptz
-   AND (   (d.doc_type = 'estimate' AND d.status = ANY($4::text[]))
-        OR (d.doc_type = 'invoice'  AND d.status = ANY($5::text[])
-                                    AND d.source_document_id IS NULL))
+SELECT date_trunc('month', j.scheduled_at AT TIME ZONE $1::text)::date AS month,
+       coalesce(sum(j.total), 0)::numeric                         AS amount
+  FROM jobs j
+ WHERE j.scheduled_at >= $2::timestamptz AND j.scheduled_at < $3::timestamptz
+   AND j.status = ANY($4::text[])
  GROUP BY month
  ORDER BY month
 `
 
 type MonthlyForecastParams struct {
-	Tz                       string
-	StartAt                  time.Time
-	EndAt                    time.Time
-	ForecastEstimateStatuses []string
-	ForecastInvoiceStatuses  []string
+	Tz          string
+	StartAt     time.Time
+	EndAt       time.Time
+	JobStatuses []string
 }
 
 type MonthlyForecastRow struct {
@@ -472,14 +528,14 @@ type MonthlyForecastRow struct {
 	Amount decimal.Decimal
 }
 
-// Sales Forecast: same rule as Total New Jobs in the Stats row, per local month.
+// Sales Forecast: the total of jobs scheduled per local month that are still on the books
+// (job_statuses: not canceled or terminated). Future months show the work already booked.
 func (q *Queries) MonthlyForecast(ctx context.Context, arg MonthlyForecastParams) ([]MonthlyForecastRow, error) {
 	rows, err := q.db.Query(ctx, monthlyForecast,
 		arg.Tz,
 		arg.StartAt,
 		arg.EndAt,
-		arg.ForecastEstimateStatuses,
-		arg.ForecastInvoiceStatuses,
+		arg.JobStatuses,
 	)
 	if err != nil {
 		return nil, err
@@ -501,7 +557,7 @@ func (q *Queries) MonthlyForecast(ctx context.Context, arg MonthlyForecastParams
 
 const monthlyRevenue = `-- name: MonthlyRevenue :many
 SELECT date_trunc('month', d.issued_at AT TIME ZONE $1::text)::date AS month,
-       coalesce(sum(d.total), 0)::numeric                       AS amount
+       coalesce(sum(d.subtotal), 0)::numeric                    AS amount
   FROM documents d
  WHERE d.doc_type = 'invoice'
    AND d.status = ANY($2::text[])
@@ -522,7 +578,7 @@ type MonthlyRevenueRow struct {
 	Amount decimal.Decimal
 }
 
-// Revenue per Month: same invoice rule as the Stats row, per local month.
+// Revenue per Month: same invoice rule as the Stats row (subtotal, tax excluded), per local month.
 func (q *Queries) MonthlyRevenue(ctx context.Context, arg MonthlyRevenueParams) ([]MonthlyRevenueRow, error) {
 	rows, err := q.db.Query(ctx, monthlyRevenue,
 		arg.Tz,
@@ -591,11 +647,11 @@ func (q *Queries) PaymentsByMethod(ctx context.Context, arg PaymentsByMethodPara
 }
 
 const revenueByStaff = `-- name: RevenueByStaff :many
-SELECT s.id                               AS staff_id,
-       s.name                             AS staff_name,
+SELECT s.id                                  AS staff_id,
+       s.name                                AS staff_name,
        s.avatar_url,
-       count(*)::bigint                   AS count,
-       coalesce(sum(d.total), 0)::numeric AS amount
+       count(*)::bigint                      AS count,
+       coalesce(sum(d.subtotal), 0)::numeric AS amount
   FROM documents d
   LEFT JOIN jobs  j ON j.id = d.job_id
   LEFT JOIN staff s ON s.id = j.staff_id
@@ -621,6 +677,7 @@ type RevenueByStaffRow struct {
 }
 
 // Revenue by Staff: invoice -> job -> staff. A NULL staff (no job, or a job without staff) is the "Other" row.
+// Revenue is the subtotal (tax excluded), as in the Stats row.
 func (q *Queries) RevenueByStaff(ctx context.Context, arg RevenueByStaffParams) ([]RevenueByStaffRow, error) {
 	rows, err := q.db.Query(ctx, revenueByStaff, arg.RevenueStatuses, arg.StartAt, arg.EndAt)
 	if err != nil {

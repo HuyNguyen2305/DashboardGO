@@ -28,40 +28,50 @@ INSERT INTO documents (doc_type, status, number, customer_id, issued_at, total) 
   ('estimate', 'draft',    'EST-1',  1, '2026-10-02 09:00+07',  660.22),
   ('estimate', 'pending',  'EST-2',  1, '2026-10-04 09:00+07',   62.00),
   ('estimate', 'invoiced', 'EST-3',  1, '2026-10-08 09:00+07',   40.00),
-  ('estimate', 'lost',     'EST-4',  1, '2026-10-09 09:00+07',  300.00),  -- ignored by forecasts: lost
-  ('estimate', 'won',      'EST-5',  1, '2026-11-05 10:00+07',  150.00);  -- November forecast
+  ('estimate', 'lost',     'EST-4',  1, '2026-10-09 09:00+07',  300.00),  -- ignored by Total New Jobs: lost
+  ('estimate', 'won',      'EST-5',  1, '2026-11-05 10:00+07',  150.00);  -- November: Total New Jobs only (the forecast is built from jobs)
 
--- Invoice converted from EST-3: counts as revenue, but not again in forecasts.
+-- Invoice converted from EST-3: counts as revenue, but not again in Total New Jobs.
 INSERT INTO documents (doc_type, status, number, customer_id, issued_at, total, source_document_id)
 SELECT 'invoice', 'paid', 'INV-6', 1, '2026-10-10 09:00+07', 40.00, id
   FROM documents WHERE doc_type = 'estimate' AND number = 'EST-3';
 
 -- Older invoices for Invoices Aging (as of Oct 12) and the yearly charts.
-INSERT INTO documents (doc_type, status, number, customer_id, issued_at, due_date, total, amount_paid) VALUES
-  ('invoice', 'partial_paid', 'INV-A3', 1, '2026-06-01 10:00+07', '2026-06-01', 300.00, 100.00),  -- 133 days: 90+, balance 200
-  ('invoice', 'sent',         'INV-A2', 1, '2026-07-01 00:30+07', '2026-07-20',  95.00,   0.00),  -- 84 days: 61–90; July locally, June in UTC
-  ('invoice', 'partial',      'INV-A1', 1, '2026-08-03 10:00+07', '2026-10-20', 200.00, 107.23),  -- not due yet: 0–30, balance 92.77
-  ('invoice', 'sent',         'INV-A6', 1, '2026-08-10 10:00+07', '2026-09-12',  10.00,   0.00),  -- exactly 30 days: 0–30
-  ('invoice', 'sent',         'INV-A7', 1, '2026-08-11 10:00+07', '2026-09-11',  20.00,   0.00),  -- 31 days: 31–60
-  ('invoice', 'paid',         'INV-A5', 1, '2026-08-12 10:00+07', '2026-08-30',  75.00,  75.00),  -- paid off: not aging
-  ('invoice', 'draft',        'INV-A4', 1, '2026-08-13 10:00+07', '2026-05-01',  50.00,   0.00);  -- draft: not aging
+-- amount_paid is derived from the payments below.
+INSERT INTO documents (doc_type, status, number, customer_id, issued_at, due_date, total) VALUES
+  ('invoice', 'partial_paid', 'INV-A3', 1, '2026-06-01 10:00+07', '2026-06-01', 300.00),  -- 133 days: 90+, balance 200
+  ('invoice', 'sent',         'INV-A2', 1, '2026-07-01 00:30+07', '2026-07-20',  95.00),  -- 84 days: 61–90; July locally, June in UTC
+  ('invoice', 'partial_paid', 'INV-A1', 1, '2026-08-03 10:00+07', '2026-10-20', 200.00),  -- not due yet: current, balance 92.77
+  ('invoice', 'sent',         'INV-A6', 1, '2026-08-10 10:00+07', '2026-09-12',  10.00),  -- exactly 30 days: 1–30
+  ('invoice', 'sent',         'INV-A7', 1, '2026-08-11 10:00+07', '2026-09-11',  20.00),  -- 31 days: 31–60
+  ('invoice', 'paid',         'INV-A5', 1, '2026-08-12 10:00+07', '2026-08-30',  75.00),  -- paid off: not aging
+  ('invoice', 'draft',        'INV-A4', 1, '2026-08-13 10:00+07', '2026-05-01',  50.00);  -- draft: not aging
 
--- Payments: 11 checks of 65.00 plus one Stripe payment in October, one check in September.
+-- Revenue is the subtotal (tax excluded); every screenshot document is tax-free.
+UPDATE documents SET subtotal = total, tax = 0;
+
+-- Payments: 11 checks of 65.00 plus one Stripe payment in October, one check in September,
+-- and the earlier payments behind the aging balances.
 INSERT INTO payments (document_id, method, amount, received_at)
 SELECT d.id, 'check', 65.00, '2026-10-01 08:00+07'::timestamptz + n * interval '1 day'
   FROM documents d, generate_series(0, 10) n
  WHERE d.number = 'INV-2';
 INSERT INTO payments (document_id, method, amount, received_at)
 SELECT d.id, v.method, v.amount, v.received_at
-  FROM (VALUES ('INV-2', 'stripe', 152.26, '2026-10-20 15:00+07'::timestamptz),
-               ('INV-5', 'check',   99.00, '2026-09-30 12:00+07'::timestamptz)) v(number, method, amount, received_at)
+  FROM (VALUES ('INV-2',  'stripe', 152.26, '2026-10-10 15:00+07'::timestamptz),  -- before "today" (Oct 12)
+               ('INV-5',  'check',   99.00, '2026-09-30 12:00+07'::timestamptz),
+               ('INV-A3', 'check',  100.00, '2026-06-15 10:00+07'::timestamptz),
+               ('INV-A1', 'card',   107.23, '2026-08-20 10:00+07'::timestamptz),
+               ('INV-A5', 'cash',    75.00, '2026-08-25 10:00+07'::timestamptz)) v(number, method, amount, received_at)
   JOIN documents d ON d.doc_type = 'invoice' AND d.number = v.number;
 
--- Jobs in October: 14 completed for Thọ (Oct 1–14, 09:00), totalling 924.30.
-INSERT INTO jobs (customer_id, staff_id, status, total, scheduled_at, created_at)
+-- Jobs in October: 14 completed for Thọ (scheduled Oct 1–14, 09:00), totalling 924.30.
+-- Each is finished an hour after its slot; the Oct 13 and 14 jobs were done early, on Oct 12 at 08:00.
+INSERT INTO jobs (customer_id, staff_id, status, total, scheduled_at, completed_at, created_at)
 SELECT 1, (SELECT id FROM staff WHERE name = 'Thọ'), 'completed',
        CASE WHEN n = 13 THEN 66.04 ELSE 66.02 END,
        '2026-10-01 09:00+07'::timestamptz + n * interval '1 day',
+       least('2026-10-01 10:00+07'::timestamptz + n * interval '1 day', '2026-10-12 08:00+07'),
        '2026-09-28 09:00+07'::timestamptz + n * interval '1 day'
   FROM generate_series(0, 13) n;
 
@@ -80,11 +90,11 @@ SELECT 1, (SELECT id FROM staff WHERE name = 'User'),
   FROM generate_series(0, 15) n;
 
 -- Unassigned jobs. October totals: 18 incomplete = 1371.24, 14 completed = 924.30, 1 terminated = 65.00.
-INSERT INTO jobs (customer_id, status, total, scheduled_at, created_at, booked_online) VALUES
-  (1, 'incomplete',  76.18, '2026-10-20 09:00+07', '2026-10-01 09:00+07', false),
-  (1, 'terminated',  65.00, '2026-10-21 09:00+07', '2026-10-01 09:00+07', false),
-  (1, 'completed',   50.00, '2026-11-01 00:00+07', '2026-10-25 09:00+07', false),  -- November
-  (1, 'incomplete', 120.00, '2026-10-02 09:00+07', '2026-09-15 09:00+07', true);   -- booked online in September
+INSERT INTO jobs (customer_id, status, total, scheduled_at, completed_at, created_at, booked_online) VALUES
+  (1, 'incomplete',  76.18, '2026-10-20 09:00+07', NULL,                  '2026-10-01 09:00+07', false),
+  (1, 'terminated',  65.00, '2026-10-21 09:00+07', NULL,                  '2026-10-01 09:00+07', false),
+  (1, 'completed',   50.00, '2026-11-01 00:00+07', '2026-11-01 01:00+07', '2026-10-25 09:00+07', false),  -- November
+  (1, 'incomplete', 120.00, '2026-10-02 09:00+07', NULL,                  '2026-09-15 09:00+07', true);   -- booked online in September
 
 -- Active Services: the 120.00 job is a third Initial Service job; the 76.18 job has no service.
 UPDATE jobs SET service_id = (SELECT id FROM services WHERE name = 'Initial Service') WHERE total = 120.00;

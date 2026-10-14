@@ -2,16 +2,21 @@
 package fmthook
 
 import (
+	"encoding/json"
+	"fmt"
 	"path"
 	"path/filepath"
 	"strings"
 )
 
-// Command is one program to run from Dir.
+// Command is one program to run from Dir. When OnlyFile is set the command is golangci-lint
+// writing JSON to stdout, and only issues in that file (project-relative, forward slashes) count;
+// see IssuesFor.
 type Command struct {
-	Name string
-	Args []string
-	Dir  string
+	Name     string
+	Args     []string
+	Dir      string
+	OnlyFile string
 }
 
 // generatedDirs hold generated Go code: gofmt still runs there, but lint is skipped.
@@ -41,7 +46,14 @@ func Commands(filePath, projectDir string, hasNodeModules bool) []Command {
 		if path.Dir(rel) == "." {
 			pkg = "./"
 		}
-		return append(cmds, Command{Name: "golangci-lint", Args: []string{"run", "--fix", pkg}, Dir: projectDir})
+		// The whole package is linted so it type-checks, but without --fix (which could rewrite
+		// files nobody edited) and with issues filtered to the edited file.
+		return append(cmds, Command{
+			Name:     "golangci-lint",
+			Args:     []string{"run", "--output.json.path=stdout", "--output.text.path=stderr", "--show-stats=false", pkg},
+			Dir:      projectDir,
+			OnlyFile: rel,
+		})
 
 	case strings.HasPrefix(rel, "web/") && webExts[ext] && !strings.HasPrefix(rel, "web/node_modules/"):
 		if !hasNodeModules {
@@ -54,6 +66,34 @@ func Commands(filePath, projectDir string, hasNodeModules bool) []Command {
 		}
 	}
 	return nil
+}
+
+// IssuesFor reads golangci-lint's JSON report and returns the issues in file (project-relative,
+// forward slashes) as "file:line:col: text (linter)", plus how many issues the report holds in all.
+// An error means the report is unreadable, i.e. golangci-lint itself failed (for example a
+// package that doesn't type-check); callers should then show its raw output.
+func IssuesFor(report []byte, file string) (forFile []string, total int, err error) {
+	var r struct {
+		Issues []struct {
+			FromLinter string
+			Text       string
+			Pos        struct {
+				Filename     string
+				Line, Column int
+			}
+		}
+	}
+	if err := json.Unmarshal(report, &r); err != nil {
+		return nil, 0, fmt.Errorf("read golangci-lint report: %w", err)
+	}
+	for _, is := range r.Issues {
+		// Windows runs report backslashes; normalize on every OS so reports compare the same.
+		name := strings.ReplaceAll(is.Pos.Filename, `\`, "/")
+		if strings.EqualFold(name, file) {
+			forFile = append(forFile, fmt.Sprintf("%s:%d:%d: %s (%s)", name, is.Pos.Line, is.Pos.Column, is.Text, is.FromLinter))
+		}
+	}
+	return forFile, len(r.Issues), nil
 }
 
 // relativeTo returns filePath relative to projectDir with forward slashes,

@@ -47,6 +47,72 @@ func (_m *MockDashboardRepository) EXPECT() *MockDashboardRepository_Expecter {
 	return &MockDashboardRepository_Expecter{mock: &_m.Mock}
 }
 
+// ActiveServiceCustomers provides a mock function for the type MockDashboardRepository
+func (_mock *MockDashboardRepository) ActiveServiceCustomers(ctx context.Context, q model.ServicesQuery) (model.ServiceCustomers, error) {
+	ret := _mock.Called(ctx, q)
+
+	if len(ret) == 0 {
+		panic("no return value specified for ActiveServiceCustomers")
+	}
+
+	var r0 model.ServiceCustomers
+	var r1 error
+	if returnFunc, ok := ret.Get(0).(func(context.Context, model.ServicesQuery) (model.ServiceCustomers, error)); ok {
+		return returnFunc(ctx, q)
+	}
+	if returnFunc, ok := ret.Get(0).(func(context.Context, model.ServicesQuery) model.ServiceCustomers); ok {
+		r0 = returnFunc(ctx, q)
+	} else {
+		r0 = ret.Get(0).(model.ServiceCustomers)
+	}
+	if returnFunc, ok := ret.Get(1).(func(context.Context, model.ServicesQuery) error); ok {
+		r1 = returnFunc(ctx, q)
+	} else {
+		r1 = ret.Error(1)
+	}
+	return r0, r1
+}
+
+// MockDashboardRepository_ActiveServiceCustomers_Call is a *mock.Call that shadows Run/Return methods with type explicit version for method 'ActiveServiceCustomers'
+type MockDashboardRepository_ActiveServiceCustomers_Call struct {
+	*mock.Call
+}
+
+// ActiveServiceCustomers is a helper method to define mock.On call
+//   - ctx context.Context
+//   - q model.ServicesQuery
+func (_e *MockDashboardRepository_Expecter) ActiveServiceCustomers(ctx any, q any) *MockDashboardRepository_ActiveServiceCustomers_Call {
+	return &MockDashboardRepository_ActiveServiceCustomers_Call{Call: _e.mock.On("ActiveServiceCustomers", ctx, q)}
+}
+
+func (_c *MockDashboardRepository_ActiveServiceCustomers_Call) Run(run func(ctx context.Context, q model.ServicesQuery)) *MockDashboardRepository_ActiveServiceCustomers_Call {
+	_c.Call.Run(func(args mock.Arguments) {
+		var arg0 context.Context
+		if args[0] != nil {
+			arg0 = args[0].(context.Context)
+		}
+		var arg1 model.ServicesQuery
+		if args[1] != nil {
+			arg1 = args[1].(model.ServicesQuery)
+		}
+		run(
+			arg0,
+			arg1,
+		)
+	})
+	return _c
+}
+
+func (_c *MockDashboardRepository_ActiveServiceCustomers_Call) Return(serviceCustomers model.ServiceCustomers, err error) *MockDashboardRepository_ActiveServiceCustomers_Call {
+	_c.Call.Return(serviceCustomers, err)
+	return _c
+}
+
+func (_c *MockDashboardRepository_ActiveServiceCustomers_Call) RunAndReturn(run func(ctx context.Context, q model.ServicesQuery) (model.ServiceCustomers, error)) *MockDashboardRepository_ActiveServiceCustomers_Call {
+	_c.Call.Return(run)
+	return _c
+}
+
 // ActiveServices provides a mock function for the type MockDashboardRepository
 func (_mock *MockDashboardRepository) ActiveServices(ctx context.Context, q model.ServicesQuery) ([]model.ServiceRow, error) {
 	ret := _mock.Called(ctx, q)
@@ -857,6 +923,69 @@ func (_c *MockDashboardRepository_TagUsage_Call) Return(tagRows []model.TagRow, 
 }
 
 func (_c *MockDashboardRepository_TagUsage_Call) RunAndReturn(run func(ctx context.Context, scope string) ([]model.TagRow, error)) *MockDashboardRepository_TagUsage_Call {
+	_c.Call.Return(run)
+	return _c
+}
+
+// WithTx provides a mock function for the type MockDashboardRepository
+func (_mock *MockDashboardRepository) WithTx(ctx context.Context, opts model.TxOptions, fn func(ctx context.Context) error) error {
+	ret := _mock.Called(ctx, opts, fn)
+
+	if len(ret) == 0 {
+		panic("no return value specified for WithTx")
+	}
+
+	var r0 error
+	if returnFunc, ok := ret.Get(0).(func(context.Context, model.TxOptions, func(ctx context.Context) error) error); ok {
+		r0 = returnFunc(ctx, opts, fn)
+	} else {
+		r0 = ret.Error(0)
+	}
+	return r0
+}
+
+// MockDashboardRepository_WithTx_Call is a *mock.Call that shadows Run/Return methods with type explicit version for method 'WithTx'
+type MockDashboardRepository_WithTx_Call struct {
+	*mock.Call
+}
+
+// WithTx is a helper method to define mock.On call
+//   - ctx context.Context
+//   - opts model.TxOptions
+//   - fn func(ctx context.Context) error
+func (_e *MockDashboardRepository_Expecter) WithTx(ctx any, opts any, fn any) *MockDashboardRepository_WithTx_Call {
+	return &MockDashboardRepository_WithTx_Call{Call: _e.mock.On("WithTx", ctx, opts, fn)}
+}
+
+func (_c *MockDashboardRepository_WithTx_Call) Run(run func(ctx context.Context, opts model.TxOptions, fn func(ctx context.Context) error)) *MockDashboardRepository_WithTx_Call {
+	_c.Call.Run(func(args mock.Arguments) {
+		var arg0 context.Context
+		if args[0] != nil {
+			arg0 = args[0].(context.Context)
+		}
+		var arg1 model.TxOptions
+		if args[1] != nil {
+			arg1 = args[1].(model.TxOptions)
+		}
+		var arg2 func(ctx context.Context) error
+		if args[2] != nil {
+			arg2 = args[2].(func(ctx context.Context) error)
+		}
+		run(
+			arg0,
+			arg1,
+			arg2,
+		)
+	})
+	return _c
+}
+
+func (_c *MockDashboardRepository_WithTx_Call) Return(err error) *MockDashboardRepository_WithTx_Call {
+	_c.Call.Return(err)
+	return _c
+}
+
+func (_c *MockDashboardRepository_WithTx_Call) RunAndReturn(run func(ctx context.Context, opts model.TxOptions, fn func(ctx context.Context) error) error) *MockDashboardRepository_WithTx_Call {
 	_c.Call.Return(run)
 	return _c
 }

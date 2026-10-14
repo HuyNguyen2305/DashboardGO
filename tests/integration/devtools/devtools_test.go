@@ -41,14 +41,14 @@ func TestMigrateRunner(t *testing.T) {
 	require.NoError(t, m.Up())
 	v, _, err = m.Version()
 	require.NoError(t, err)
-	assert.Equal(t, uint(3), v)
+	assert.Equal(t, uint(6), v)
 
 	assert.ErrorIs(t, m.Up(), migrate.ErrNoChange)
 
 	require.NoError(t, m.Down(1))
 	v, _, err = m.Version()
 	require.NoError(t, err)
-	assert.Equal(t, uint(2), v, "down without N reverts exactly one migration")
+	assert.Equal(t, uint(5), v, "down without N reverts exactly one migration")
 
 	require.Error(t, m.Down(0), "down 0 must be refused, never treated as 'all'")
 	require.NoError(t, m.Up())
@@ -81,6 +81,34 @@ func TestSeedRefusesExistingDataWithoutReset(t *testing.T) {
 	require.ErrorIs(t, err, devdata.ErrUnknownPreset)
 }
 
+func TestSeedIntoEmptiedDatabase(t *testing.T) {
+	pool := newPool(t)
+	ctx := context.Background()
+	_, err := devdata.Seed(ctx, pool, devdata.SeedOptions{Preset: devdata.PresetScreenshot})
+	require.NoError(t, err)
+
+	// Empty every table with DELETE: the rows are gone but the ID counters stay past 1.
+	_, err = pool.Exec(ctx, `DELETE FROM payments; DELETE FROM document_items; DELETE FROM documents;
+		DELETE FROM jobs; DELETE FROM location_tags; DELETE FROM customer_tags; DELETE FROM tags;
+		DELETE FROM locations; DELETE FROM customers; DELETE FROM services; DELETE FROM staff;`)
+	require.NoError(t, err)
+
+	summary, err := devdata.Seed(ctx, pool, devdata.SeedOptions{Preset: devdata.PresetScreenshot})
+	require.NoError(t, err, "an empty database seeds without reset, whatever its ID counters")
+	assert.Equal(t, devdata.TableCount{Table: "staff", Rows: 4}, summary[0])
+
+	t.Run("a leftover row in any table counts as data", func(t *testing.T) {
+		_, err := pool.Exec(ctx, `TRUNCATE staff, services, customers, locations, tags, customer_tags,
+			location_tags, jobs, documents, document_items, payments RESTART IDENTITY;
+			INSERT INTO tags (name, scope) VALUES ('leftover', 'customer');`)
+		require.NoError(t, err)
+
+		_, err = devdata.Seed(ctx, pool, devdata.SeedOptions{Preset: devdata.PresetScreenshot})
+		require.ErrorIs(t, err, devdata.ErrNotEmpty)
+		assert.Contains(t, err.Error(), "tags has rows")
+	})
+}
+
 // TestDemoSeedServesConsistentDashboard loads generated data and checks that widgets
 // computed by different queries agree with each other.
 func TestDemoSeedServesConsistentDashboard(t *testing.T) {
@@ -110,11 +138,13 @@ func TestDemoSeedServesConsistentDashboard(t *testing.T) {
 
 	now := today.Add(10 * time.Hour)
 	svc := service.NewDashboardService(repository.NewDashboardRepository(pool, 5*time.Second))
-	srv := httptest.NewServer(handler.NewRouter(handler.RouterDeps{
+	router, err := handler.NewRouter(handler.RouterDeps{
 		Log:       slog.New(slog.NewTextHandler(io.Discard, nil)),
 		Health:    handler.NewHealthHandler(pool, time.Second),
 		Dashboard: handler.NewDashboardHandler(svc, daterange.NewResolver(loc, func() time.Time { return now })),
-	}))
+	})
+	require.NoError(t, err)
+	srv := httptest.NewServer(router)
 	t.Cleanup(srv.Close)
 
 	get := func(path string, out any) {
@@ -153,24 +183,52 @@ func TestDemoSeedServesConsistentDashboard(t *testing.T) {
 			assert.Equal(t, incomplete.Amount, services.TotalAmount, "Active Services = Jobs incomplete row")
 			assert.Equal(t, incomplete.Count, services.TotalCount)
 
-			var completed int64
-			for _, r := range jobs.Rows {
-				if r.Key == "completed" {
-					completed = r.Count
-				}
+			// Jobs Completed counts by completion time up to now; the Jobs widget counts by schedule,
+			// so the two differ by design.
+			start, err := time.ParseInLocation(time.DateOnly, stats.Range.Start, loc)
+			require.NoError(t, err)
+			lastDay, err := time.ParseInLocation(time.DateOnly, stats.Range.End, loc)
+			require.NoError(t, err)
+			end := lastDay.AddDate(0, 0, 1)
+			if now.Before(end) {
+				end = now
 			}
-			assert.Equal(t, stats.JobsCompleted, completed, "Jobs Completed = Jobs completed row")
+			var completed int64
+			require.NoError(t, pool.QueryRow(ctx, `SELECT count(*) FROM jobs
+			   WHERE status = 'completed' AND completed_at >= $1 AND completed_at < $2`, start, end).Scan(&completed))
+			assert.Equal(t, completed, stats.JobsCompleted, "Jobs Completed = jobs finished in the period so far")
 		})
 	}
 
-	t.Run("yearly charts match the stats row for this month", func(t *testing.T) {
+	t.Run("yearly charts cover whole months, the stats row stops at now", func(t *testing.T) {
+		// sumSQL totals a widget's rule for October from the first of the month up to end.
+		october := time.Date(2026, time.October, 1, 0, 0, 0, 0, loc)
+		sumSQL := func(sql string, end time.Time) string {
+			t.Helper()
+			var out string
+			require.NoError(t, pool.QueryRow(ctx, sql, october, end).Scan(&out))
+			return out
+		}
+		const revenueSQL = `SELECT coalesce(sum(subtotal), 0)::numeric(12,2)::text FROM documents
+		   WHERE doc_type = 'invoice' AND status IN ('sent', 'partial_paid', 'paid') AND issued_at >= $1 AND issued_at < $2`
+		const newJobsSQL = `SELECT coalesce(sum(total), 0)::numeric(12,2)::text FROM documents
+		   WHERE issued_at >= $1 AND issued_at < $2
+		     AND ((doc_type = 'estimate' AND status <> 'lost')
+		       OR (doc_type = 'invoice' AND status IN ('sent', 'partial_paid', 'paid') AND source_document_id IS NULL))`
+		const forecastSQL = `SELECT coalesce(sum(total), 0)::numeric(12,2)::text FROM jobs
+		   WHERE scheduled_at >= $1 AND scheduled_at < $2 AND status NOT IN ('canceled', 'terminated')`
+		november := october.AddDate(0, 1, 0)
+
 		var stats dto.StatsResponse
 		get("stats", &stats)
+		assert.Equal(t, sumSQL(revenueSQL, now), stats.Revenue, "Revenue up to now")
+		assert.Equal(t, sumSQL(newJobsSQL, now), stats.TotalNewJobs, "Total New Jobs up to now")
+
 		var revenue, forecast dto.YearSeriesResponse
 		get("revenue-per-month", &revenue)
 		get("sales-forecast", &forecast)
-		assert.Equal(t, stats.Revenue, revenue.Months[9].Amount, "October revenue")
-		assert.Equal(t, stats.TotalNewJobs, forecast.Months[9].Amount, "October forecast = Total New Jobs")
+		assert.Equal(t, sumSQL(revenueSQL, november), revenue.Months[9].Amount, "October revenue, whole month")
+		assert.Equal(t, sumSQL(forecastSQL, november), forecast.Months[9].Amount, "October forecast: booked jobs, whole month")
 	})
 
 	t.Run("remaining widgets respond", func(t *testing.T) {
@@ -191,7 +249,7 @@ func TestDemoSeedServesConsistentDashboard(t *testing.T) {
 		var invoices, estimates dto.BreakdownResponse
 		get("invoices", &invoices)
 		get("estimates", &estimates)
-		assert.Len(t, invoices.Rows, 8)
+		assert.Len(t, invoices.Rows, 7)
 		assert.Len(t, estimates.Rows, 5)
 	})
 }

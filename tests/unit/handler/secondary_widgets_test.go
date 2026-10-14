@@ -45,29 +45,31 @@ func TestActiveServicesEndpoint(t *testing.T) {
 	svc := mocks.NewMockDashboardService(t)
 	svc.EXPECT().ActiveServices(mock.Anything, presetIs(daterange.Last7Days)).Return(model.ActiveServices{
 		Rows: []model.ServiceRow{
-			{ServiceID: ptr(int64(3)), Name: "Bi-Monthly Service", IsRecurring: true, Count: 4, Amount: decimal.RequireFromString("260"), Percent: 100},
+			{ServiceID: ptr(int64(3)), Name: "Bi-Monthly Service", IsRecurring: true, Count: 4, CustomerCount: 2, Amount: decimal.RequireFromString("260"), Percent: 100},
 			{ServiceID: nil, Name: "No service", Count: 1, Amount: decimal.Zero, Percent: 0},
 		},
 		TotalCount: 5, RecurringCount: 4, TotalAmount: decimal.RequireFromString("260"),
+		ServiceCustomers: model.ServiceCustomers{CustomerCount: 3, RecurringCustomerCount: 2},
 	}, nil).Once()
 
 	code, body := call(t, svc, "/api/v1/dashboard/active-services?range=last_7_days")
 	require.Equal(t, http.StatusOK, code, body)
 	assert.JSONEq(t, `{
 		"range": {"preset": "last_7_days", "start": "2026-10-06", "end": "2026-10-12"},
-		"total_count": 5, "recurring_count": 4, "total_amount": "260.00",
+		"total_count": 5, "recurring_count": 4, "customer_count": 3, "recurring_customer_count": 2, "total_amount": "260.00",
 		"rows": [
-			{"service_id": 3, "name": "Bi-Monthly Service", "is_recurring": true, "count": 4, "amount": "260.00", "percent": 100},
-			{"service_id": null, "name": "No service", "is_recurring": false, "count": 1, "amount": "0.00", "percent": 0}
+			{"service_id": 3, "name": "Bi-Monthly Service", "is_recurring": true, "count": 4, "customer_count": 2, "amount": "260.00", "percent": 100},
+			{"service_id": null, "name": "No service", "is_recurring": false, "count": 1, "customer_count": 0, "amount": "0.00", "percent": 0}
 		]
 	}`, body)
 }
 
 func TestTagsEndpoint(t *testing.T) {
-	usage := model.TagUsage{Rows: []model.TagRow{{TagID: 1, Name: "1233", Count: 1, Percent: 50}}, TotalCount: 1}
+	usage := model.TagUsage{Rows: []model.TagRow{{TagID: ptr(int64(1)), Name: "1233", Count: 1, Percent: 50}}, TotalCount: 1}
 
 	cases := []struct{ name, query, wantScope string }{
 		{"defaults to location", "", "location"},
+		{"empty scope defaults to location too", "?scope=", "location"},
 		{"customer scope", "?scope=customer", "customer"},
 	}
 	for _, tc := range cases {

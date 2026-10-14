@@ -31,7 +31,7 @@ func call(t *testing.T, svc *mocks.MockDashboardService, path string) (int, stri
 
 func TestJobsEndpoint(t *testing.T) {
 	svc := mocks.NewMockDashboardService(t)
-	svc.EXPECT().Jobs(mock.Anything, presetIs(daterange.ThisMonth), []int64{3, 1, 2}).Return(model.JobsWidget{
+	svc.EXPECT().Jobs(mock.Anything, presetIs(daterange.ThisMonth), model.StaffFilter{IDs: []int64{3, 1, 2}}).Return(model.JobsWidget{
 		Breakdown: model.Breakdown{
 			Rows: []model.BreakdownRow{
 				{Key: "incomplete", Count: 18, Amount: decimal.RequireFromString("1371.24"), Percent: 54.55},
@@ -64,11 +64,30 @@ func TestJobsEndpoint(t *testing.T) {
 
 func TestJobsWithoutStaffFilterMeansAllSchedules(t *testing.T) {
 	svc := mocks.NewMockDashboardService(t)
-	svc.EXPECT().Jobs(mock.Anything, mock.Anything, []int64(nil)).Return(model.JobsWidget{}, nil).Once()
+	svc.EXPECT().Jobs(mock.Anything, mock.Anything, model.StaffFilter{}).Return(model.JobsWidget{}, nil).Once()
 
 	code, body := call(t, svc, "/api/v1/dashboard/jobs?range=today")
 	require.Equal(t, http.StatusOK, code, body)
 	assert.Contains(t, body, `"rows":[]`, "empty rows must encode as [] not null")
+}
+
+func TestJobsStaffFilterAcceptsUnassigned(t *testing.T) {
+	cases := []struct {
+		name, query string
+		want        model.StaffFilter
+	}{
+		{"only unassigned", "staff_ids=unassigned", model.StaffFilter{Unassigned: true}},
+		{"staff and unassigned", "staff_ids=1,unassigned&staff_ids=2", model.StaffFilter{IDs: []int64{1, 2}, Unassigned: true}},
+		{"unassigned twice", "staff_ids=unassigned,unassigned", model.StaffFilter{Unassigned: true}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			svc := mocks.NewMockDashboardService(t)
+			svc.EXPECT().Jobs(mock.Anything, mock.Anything, tc.want).Return(model.JobsWidget{}, nil).Once()
+			code, body := call(t, svc, "/api/v1/dashboard/jobs?"+tc.query)
+			require.Equal(t, http.StatusOK, code, body)
+		})
+	}
 }
 
 func TestJobsRejectsBadStaffIDs(t *testing.T) {
@@ -80,6 +99,7 @@ func TestJobsRejectsBadStaffIDs(t *testing.T) {
 		{"not a number", "staff_ids=abc", "staff_ids must be positive whole numbers"},
 		{"negative", "staff_ids=-1", "staff_ids must be positive whole numbers"},
 		{"zero", "staff_ids=0", "staff_ids must be positive whole numbers"},
+		{"misspelled unassigned", "staff_ids=Unassigned", `or "unassigned"`},
 		{"too many", strings.Join(many, "&"), "at most 50 staff_ids"},
 	}
 	for _, tc := range cases {
@@ -139,18 +159,18 @@ func TestInvoiceAgingEndpointUsesToday(t *testing.T) {
 	})).Return(model.AgingWidget{
 		AsOf: time.Date(2026, 10, 12, 0, 0, 0, 0, time.UTC),
 		Breakdown: model.Breakdown{
-			Rows:        []model.BreakdownRow{{Key: "0_30", Count: 11, Amount: decimal.RequireFromString("647.91"), Percent: 87.21}},
+			Rows:        []model.BreakdownRow{{Key: "1_30", Count: 11, Amount: decimal.RequireFromString("647.91"), Percent: 87.21}},
 			TotalCount:  11,
 			TotalAmount: decimal.RequireFromString("647.91"),
 		},
 	}, nil).Once()
 
-	// A range parameter is ignored: aging is always as of today.
-	code, body := call(t, svc, "/api/v1/dashboard/invoices/aging?range=last_month")
+	// Aging takes no parameters: it is always as of today.
+	code, body := call(t, svc, "/api/v1/dashboard/invoices/aging")
 	require.Equal(t, http.StatusOK, code, body)
 	assert.JSONEq(t, `{
 		"as_of": "2026-10-12", "total_amount": "647.91", "total_count": 11,
-		"rows": [{"key": "0_30", "count": 11, "amount": "647.91", "percent": 87.21}]
+		"rows": [{"key": "1_30", "count": 11, "amount": "647.91", "percent": 87.21}]
 	}`, body)
 }
 

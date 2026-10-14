@@ -44,19 +44,50 @@ func newEnv(t *testing.T) testEnv {
 	_, err = pool.Exec(ctx, devdata.ScreenshotSQL)
 	require.NoError(t, err)
 
+	return testEnv{pool: pool}.at(t, time.Date(2026, time.October, 12, 10, 0, 0, 0, businessTZ(t)))
+}
+
+// at serves the real router on the same database with the clock frozen at now.
+// Presets are the only date picker, so an empty range is reached by moving the clock.
+func (e testEnv) at(t *testing.T, now time.Time) testEnv {
+	t.Helper()
+	dates := daterange.NewResolver(businessTZ(t), func() time.Time { return now })
+	svc := service.NewDashboardService(repository.NewDashboardRepository(e.pool, 5*time.Second))
+	router, err := handler.NewRouter(handler.RouterDeps{
+		Log:       slog.New(slog.NewTextHandler(io.Discard, nil)),
+		Health:    handler.NewHealthHandler(e.pool, time.Second),
+		Dashboard: handler.NewDashboardHandler(svc, dates),
+	})
+	require.NoError(t, err)
+	srv := httptest.NewServer(router)
+	t.Cleanup(srv.Close)
+	return testEnv{srv: srv, pool: e.pool}
+}
+
+// before2026 is an env whose "last month" is January 2025, before any seeded row.
+func (e testEnv) before2026(t *testing.T) testEnv {
+	t.Helper()
+	return e.at(t, time.Date(2025, time.February, 15, 10, 0, 0, 0, businessTZ(t)))
+}
+
+func businessTZ(t *testing.T) *time.Location {
+	t.Helper()
 	loc, err := time.LoadLocation("Asia/Ho_Chi_Minh")
 	require.NoError(t, err)
-	now := time.Date(2026, time.October, 12, 10, 0, 0, 0, loc)
-	dates := daterange.NewResolver(loc, func() time.Time { return now })
+	return loc
+}
 
-	svc := service.NewDashboardService(repository.NewDashboardRepository(pool, 5*time.Second))
-	srv := httptest.NewServer(handler.NewRouter(handler.RouterDeps{
-		Log:       slog.New(slog.NewTextHandler(io.Discard, nil)),
-		Health:    handler.NewHealthHandler(pool, time.Second),
-		Dashboard: handler.NewDashboardHandler(svc, dates),
-	}))
-	t.Cleanup(srv.Close)
-	return testEnv{srv: srv, pool: pool}
+// getStatus returns the status code and body of GET path.
+func (e testEnv) getStatus(t *testing.T, path string) (int, string) {
+	t.Helper()
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, e.srv.URL+path, http.NoBody)
+	require.NoError(t, err)
+	resp, err := e.srv.Client().Do(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+	return resp.StatusCode, string(body)
 }
 
 // getJSON requires a 200 from GET path and decodes the body into out.

@@ -21,7 +21,7 @@ const maxStaffIDs = 50
 // DashboardService is what the dashboard handlers need from the service layer.
 type DashboardService interface {
 	Stats(ctx context.Context, r daterange.Range) (model.DashboardStats, error)
-	Jobs(ctx context.Context, r daterange.Range, staffIDs []int64) (model.JobsWidget, error)
+	Jobs(ctx context.Context, r daterange.Range, staff model.StaffFilter) (model.JobsWidget, error)
 	Invoices(ctx context.Context, r daterange.Range) (model.Breakdown, error)
 	Estimates(ctx context.Context, r daterange.Range) (model.Breakdown, error)
 	InvoiceAging(ctx context.Context, asOf time.Time) (model.AgingWidget, error)
@@ -45,7 +45,7 @@ func NewDashboardHandler(svc DashboardService, dates *daterange.Resolver) *Dashb
 	return &DashboardHandler{svc: svc, dates: dates}
 }
 
-// Stats serves GET /api/v1/dashboard/stats?range=<preset> or ?from=&to=.
+// Stats serves GET /api/v1/dashboard/stats?range=<preset>.
 func (h *DashboardHandler) Stats(c *gin.Context) {
 	r, err := ParseRange(c, h.dates)
 	if err != nil {
@@ -53,7 +53,8 @@ func (h *DashboardHandler) Stats(c *gin.Context) {
 		return
 	}
 
-	s, err := h.svc.Stats(c.Request.Context(), r)
+	// Stats count what has happened, so rows dated later in the period are left out.
+	s, err := h.svc.Stats(c.Request.Context(), r.CapAt(h.dates.Now()))
 	if err != nil {
 		WriteError(c, err)
 		return
@@ -69,20 +70,20 @@ func (h *DashboardHandler) Stats(c *gin.Context) {
 	})
 }
 
-// Jobs serves GET /api/v1/dashboard/jobs?range=...&staff_ids=1&staff_ids=2 (or staff_ids=1,2).
+// Jobs serves GET /api/v1/dashboard/jobs?range=...&staff_ids=1&staff_ids=2 (or staff_ids=1,2,unassigned).
 func (h *DashboardHandler) Jobs(c *gin.Context) {
 	r, err := ParseRange(c, h.dates)
 	if err != nil {
 		WriteError(c, err)
 		return
 	}
-	staffIDs, err := parseStaffIDs(c)
+	staff, err := parseStaffFilter(c)
 	if err != nil {
 		WriteError(c, err)
 		return
 	}
 
-	w, err := h.svc.Jobs(c.Request.Context(), r, staffIDs)
+	w, err := h.svc.Jobs(c.Request.Context(), r, staff)
 	if err != nil {
 		WriteError(c, err)
 		return
@@ -116,7 +117,8 @@ func (h *DashboardHandler) breakdown(c *gin.Context, load func(context.Context, 
 		WriteError(c, err)
 		return
 	}
-	b, err := load(c.Request.Context(), r)
+	// Invoices, estimates and payments dated later in the period haven't happened yet.
+	b, err := load(c.Request.Context(), r.CapAt(h.dates.Now()))
 	if err != nil {
 		WriteError(c, err)
 		return
@@ -175,7 +177,7 @@ func (h *DashboardHandler) RevenueByStaff(c *gin.Context) {
 		WriteError(c, err)
 		return
 	}
-	w, err := h.svc.RevenueByStaff(c.Request.Context(), r)
+	w, err := h.svc.RevenueByStaff(c.Request.Context(), r.CapAt(h.dates.Now()))
 	if err != nil {
 		WriteError(c, err)
 		return
@@ -208,21 +210,28 @@ func (h *DashboardHandler) ActiveServices(c *gin.Context) {
 	for i, row := range w.Rows {
 		rows[i] = dto.ServiceRow{
 			ServiceID: row.ServiceID, Name: row.Name, IsRecurring: row.IsRecurring,
-			Count: row.Count, Amount: dto.Money(row.Amount), Percent: row.Percent,
+			Count: row.Count, CustomerCount: row.CustomerCount, Amount: dto.Money(row.Amount), Percent: row.Percent,
 		}
 	}
 	c.JSON(http.StatusOK, dto.ActiveServicesResponse{
-		Range:          NewDateRange(r),
-		TotalCount:     w.TotalCount,
-		RecurringCount: w.RecurringCount,
-		TotalAmount:    dto.Money(w.TotalAmount),
-		Rows:           rows,
+		Range:                  NewDateRange(r),
+		TotalCount:             w.TotalCount,
+		RecurringCount:         w.RecurringCount,
+		CustomerCount:          w.CustomerCount,
+		RecurringCustomerCount: w.RecurringCustomerCount,
+		TotalAmount:            dto.Money(w.TotalAmount),
+		Rows:                   rows,
 	})
 }
 
 // Tags serves GET /api/v1/dashboard/tags?scope=location|customer (default location). It has no date filter.
 func (h *DashboardHandler) Tags(c *gin.Context) {
-	w, err := h.svc.Tags(c.Request.Context(), c.DefaultQuery("scope", model.TagScopeLocation))
+	// An empty ?scope= means the default too; DefaultQuery only covers a missing one.
+	scope := c.Query("scope")
+	if scope == "" {
+		scope = model.TagScopeLocation
+	}
+	w, err := h.svc.Tags(c.Request.Context(), scope)
 	if err != nil {
 		WriteError(c, err)
 		return
@@ -230,7 +239,7 @@ func (h *DashboardHandler) Tags(c *gin.Context) {
 
 	rows := make([]dto.TagRow, len(w.Rows))
 	for i, row := range w.Rows {
-		rows[i] = dto.TagRow{TagID: row.TagID, Name: row.Name, Count: row.Count, Percent: row.Percent}
+		rows[i] = dto.TagRow{TagID: row.TagID, Name: row.Name, Count: row.Count, CustomerCount: row.CustomerCount, Percent: row.Percent}
 	}
 	c.JSON(http.StatusOK, dto.TagsResponse{Scope: w.Scope, TotalCount: w.TotalCount, Rows: rows})
 }
@@ -279,10 +288,13 @@ func newBreakdownRows(rows []model.BreakdownRow) []dto.BreakdownRow {
 	return out
 }
 
-// parseStaffIDs reads staff_ids as repeated params and/or comma-separated lists.
-// No staff_ids means all schedules. Duplicates are dropped.
-func parseStaffIDs(c *gin.Context) ([]int64, error) {
-	var ids []int64
+// unassignedStaff is the staff_ids value that selects jobs with no staff.
+const unassignedStaff = "unassigned"
+
+// parseStaffFilter reads staff_ids as repeated params and/or comma-separated lists of staff IDs
+// and the word "unassigned". No staff_ids means all schedules. Duplicates are dropped.
+func parseStaffFilter(c *gin.Context) (model.StaffFilter, error) {
+	var f model.StaffFilter
 	seen := make(map[int64]bool)
 	for _, raw := range c.QueryArray("staff_ids") {
 		for _, part := range strings.Split(raw, ",") {
@@ -290,18 +302,23 @@ func parseStaffIDs(c *gin.Context) ([]int64, error) {
 			if part == "" {
 				continue
 			}
+			if part == unassignedStaff {
+				f.Unassigned = true
+				continue
+			}
 			id, err := strconv.ParseInt(part, 10, 64)
 			if err != nil || id <= 0 {
-				return nil, fmt.Errorf("%w: staff_ids must be positive whole numbers, got %q", ErrInvalidQuery, part)
+				return model.StaffFilter{}, fmt.Errorf("%w: staff_ids must be positive whole numbers or %q, got %q",
+					ErrInvalidQuery, unassignedStaff, part)
 			}
 			if !seen[id] {
 				seen[id] = true
-				ids = append(ids, id)
+				f.IDs = append(f.IDs, id)
 			}
 		}
 	}
-	if len(ids) > maxStaffIDs {
-		return nil, fmt.Errorf("%w: at most %d staff_ids allowed, got %d", ErrInvalidQuery, maxStaffIDs, len(ids))
+	if len(f.IDs) > maxStaffIDs {
+		return model.StaffFilter{}, fmt.Errorf("%w: at most %d staff_ids allowed, got %d", ErrInvalidQuery, maxStaffIDs, len(f.IDs))
 	}
-	return ids, nil
+	return f, nil
 }

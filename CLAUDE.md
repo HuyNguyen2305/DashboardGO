@@ -32,6 +32,6 @@
 - Run: `go tool task test`, `go tool task test:integration`, `go tool task check` before done.
 
 ## Formatting hooks (`.claude/settings.json`, PostToolUse on Edit|Write)
-- `*.go` → `gofmt -w` then `golangci-lint run --fix`.
+- `*.go` → `gofmt -w` then `golangci-lint run` on the file's package, reporting only the edited file's issues (no `--fix`, so other files are never rewritten; `go tool task check` covers the rest).
 - `web/**/*.{ts,tsx,js,jsx,json,css}` → `eslint --fix` then `prettier --write`.
 - Fix lint errors at the source; don't disable rules to silence them.

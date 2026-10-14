@@ -27,10 +27,12 @@ func TestHealthzAgainstRealPostgres(t *testing.T) {
 	pool, err := database.NewPool(ctx, database.PoolConfig{URL: testdb.Start(t), MaxConns: 4, MinConns: 1})
 	require.NoError(t, err)
 
-	srv := httptest.NewServer(handler.NewRouter(handler.RouterDeps{
+	router, err := handler.NewRouter(handler.RouterDeps{
 		Log:    slog.New(slog.NewTextHandler(io.Discard, nil)),
 		Health: handler.NewHealthHandler(pool, 2*time.Second),
-	}))
+	})
+	require.NoError(t, err)
+	srv := httptest.NewServer(router)
 	t.Cleanup(srv.Close)
 
 	// getHealthz returns the status code and request ID header of GET /healthz.

@@ -5,6 +5,7 @@ package testdb
 
 import (
 	"context"
+	"crypto/rand"
 	"fmt"
 	"net/url"
 	"os"
@@ -40,7 +41,8 @@ func createDatabase(t *testing.T, adminURL string) string {
 	require.NoError(t, err)
 	defer admin.Close(ctx)
 
-	name := fmt.Sprintf("test_%d", time.Now().UnixNano())
+	// Packages run as parallel processes and Windows' clock is coarse, so the time alone can collide.
+	name := fmt.Sprintf("test_%d_%s", time.Now().UnixNano(), rand.Text()[:8])
 	ident := pgx.Identifier{name}.Sanitize()
 	_, err = admin.Exec(ctx, "CREATE DATABASE "+ident)
 	require.NoError(t, err)

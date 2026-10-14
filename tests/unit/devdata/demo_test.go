@@ -72,7 +72,7 @@ func TestDemoRespectsSchemaRules(t *testing.T) {
 		assert.True(t, j.Total.GreaterThanOrEqual(decimal.Zero))
 	}
 
-	invoiceStatuses := []string{"draft", "sent", "partial", "partial_paid", "paid", "void", "write_off", "failed"}
+	invoiceStatuses := []string{"draft", "sent", "partial_paid", "paid", "void", "write_off", "failed"}
 	estimateStatuses := []string{"draft", "pending", "won", "invoiced", "lost"}
 	docs := make(map[int64]devdata.Document, len(ds.Documents))
 	numbers := make(map[string]bool)
@@ -156,7 +156,7 @@ func TestDemoCoversEveryWidget(t *testing.T) {
 		}
 		return out
 	}
-	assert.Subset(t, statuses("invoice"), []string{"draft", "sent", "partial", "paid", "void"})
+	assert.Subset(t, statuses("invoice"), []string{"draft", "sent", "partial_paid", "paid", "void"})
 	assert.Subset(t, statuses("estimate"), []string{"draft", "pending", "won", "invoiced", "lost"})
 
 	var recurring, unassigned, online int
@@ -178,4 +178,18 @@ func TestDemoCoversEveryWidget(t *testing.T) {
 	assert.Positive(t, online, "some jobs should be booked online")
 	assert.NotEmpty(t, ds.CustomerTags)
 	assert.NotEmpty(t, ds.LocationTags)
+}
+
+func TestDemoNeverCompletesJobsInTheFuture(t *testing.T) {
+	end := today(t).AddDate(0, 0, 1) // the generated data ends with "today"
+	for seed := uint64(1); seed <= 20; seed++ {
+		for _, j := range demo(t, 12, seed).Jobs {
+			if j.Status != "completed" {
+				assert.Nil(t, j.CompletedAt, "seed %d job %d: only completed jobs have completed_at", seed, j.ID)
+				continue
+			}
+			require.NotNil(t, j.CompletedAt, "seed %d job %d: completed jobs need completed_at", seed, j.ID)
+			assert.True(t, j.CompletedAt.Before(end), "seed %d job %d completed at %s, after the end of today", seed, j.ID, j.CompletedAt)
+		}
+	}
 }

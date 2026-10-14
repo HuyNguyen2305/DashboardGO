@@ -2,8 +2,10 @@
 package service
 
 import (
+	"cmp"
 	"context"
 	"fmt"
+	"slices"
 	"time"
 
 	"github.com/shopspring/decimal"
@@ -14,6 +16,8 @@ import (
 
 // DashboardRepository reads the aggregates behind the dashboard widgets.
 type DashboardRepository interface {
+	// WithTx runs fn in one transaction; repository calls made with fn's ctx use it.
+	WithTx(ctx context.Context, opts model.TxOptions, fn func(ctx context.Context) error) error
 	Stats(ctx context.Context, q model.StatsQuery) (model.DashboardStats, error)
 	JobStatusBreakdown(ctx context.Context, q model.JobsQuery) ([]model.BreakdownRow, error)
 	JobDailyCounts(ctx context.Context, q model.JobsQuery) ([]model.DayStatusCount, error)
@@ -24,14 +28,16 @@ type DashboardRepository interface {
 	PaymentsByMethod(ctx context.Context, q model.PeriodQuery) ([]model.BreakdownRow, error)
 	RevenueByStaff(ctx context.Context, q model.StatsQuery) ([]model.StaffRevenueRow, error)
 	ActiveServices(ctx context.Context, q model.ServicesQuery) ([]model.ServiceRow, error)
+	ActiveServiceCustomers(ctx context.Context, q model.ServicesQuery) (model.ServiceCustomers, error)
 	TagUsage(ctx context.Context, scope string) ([]model.TagRow, error)
 	CustomersBySource(ctx context.Context, q model.MonthlyQuery) ([]model.SourceMonthCount, error)
 }
 
-// Labels for rows that don't belong to a staff member or service.
+// Labels for rows that don't belong to a staff member, service or single tag.
 const (
 	OtherStaffLabel = "Other"
 	NoServiceLabel  = "No service"
+	OtherTagsLabel  = "Other tags"
 )
 
 // DashboardService computes dashboard widgets.
@@ -47,11 +53,12 @@ func NewDashboardService(repo DashboardRepository) *DashboardService {
 // Stats returns the top Stats row for r, applying the status rules from the model package.
 func (s *DashboardService) Stats(ctx context.Context, r daterange.Range) (model.DashboardStats, error) {
 	stats, err := s.repo.Stats(ctx, model.StatsQuery{
-		Start:                    r.Start,
-		End:                      r.End,
-		RevenueStatuses:          model.RevenueInvoiceStatuses,
-		ForecastEstimateStatuses: model.ForecastEstimateStatuses,
-		ForecastInvoiceStatuses:  model.ForecastInvoiceStatuses,
+		Start:                   r.Start,
+		End:                     r.End,
+		RevenueStatuses:         model.RevenueInvoiceStatuses,
+		NewJobsEstimateStatuses: model.NewJobsEstimateStatuses,
+		NewJobsInvoiceStatuses:  model.NewJobsInvoiceStatuses,
+		OnlineJobStatuses:       model.BookedJobStatuses,
 	})
 	if err != nil {
 		return model.DashboardStats{}, fmt.Errorf("dashboard stats: %w", err)
@@ -59,16 +66,23 @@ func (s *DashboardService) Stats(ctx context.Context, r daterange.Range) (model.
 	return stats, nil
 }
 
-// Jobs returns the Jobs widget for r, limited to staffIDs when non-empty.
+// Jobs returns the Jobs widget for r: jobs *scheduled* in the period by status, limited by staff.
+// It deliberately differs from the Stats row's Jobs Completed, which counts jobs *finished* in the period.
 // Percent is each status's share of the job count.
-func (s *DashboardService) Jobs(ctx context.Context, r daterange.Range, staffIDs []int64) (model.JobsWidget, error) {
-	q := model.JobsQuery{Start: r.Start, End: r.End, TZ: tzName(r.Start), StaffIDs: staffIDs}
+func (s *DashboardService) Jobs(ctx context.Context, r daterange.Range, staff model.StaffFilter) (model.JobsWidget, error) {
+	q := model.JobsQuery{Start: r.Start, End: r.End, TZ: tzName(r.Start), Staff: staff}
 
-	rows, err := s.repo.JobStatusBreakdown(ctx, q)
-	if err != nil {
-		return model.JobsWidget{}, fmt.Errorf("jobs widget: %w", err)
-	}
-	daily, err := s.repo.JobDailyCounts(ctx, q)
+	// Both queries read one snapshot so the breakdown and the daily chart always agree.
+	var rows []model.BreakdownRow
+	var daily []model.DayStatusCount
+	err := s.repo.WithTx(ctx, model.TxOptions{ReadOnly: true, Snapshot: true}, func(ctx context.Context) error {
+		var err error
+		if rows, err = s.repo.JobStatusBreakdown(ctx, q); err != nil {
+			return err
+		}
+		daily, err = s.repo.JobDailyCounts(ctx, q)
+		return err
+	})
 	if err != nil {
 		return model.JobsWidget{}, fmt.Errorf("jobs widget: %w", err)
 	}
@@ -116,7 +130,8 @@ func (s *DashboardService) RevenuePerMonth(ctx context.Context, r daterange.Rang
 	return fillMonths(r, months), nil
 }
 
-// SalesForecast returns the forecast for every month in r (normally one year).
+// SalesForecast returns, for every month in r (normally one year), the total of jobs scheduled in it
+// that are still on the books. Past months show what was booked, future months the work ahead.
 func (s *DashboardService) SalesForecast(ctx context.Context, r daterange.Range) (model.YearSeries, error) {
 	months, err := s.repo.MonthlyForecast(ctx, s.monthlyQuery(r))
 	if err != nil {
@@ -127,12 +142,11 @@ func (s *DashboardService) SalesForecast(ctx context.Context, r daterange.Range)
 
 func (s *DashboardService) monthlyQuery(r daterange.Range) model.MonthlyQuery {
 	return model.MonthlyQuery{
-		Start:                    r.Start,
-		End:                      r.End,
-		TZ:                       tzName(r.Start),
-		RevenueStatuses:          model.RevenueInvoiceStatuses,
-		ForecastEstimateStatuses: model.ForecastEstimateStatuses,
-		ForecastInvoiceStatuses:  model.ForecastInvoiceStatuses,
+		Start:           r.Start,
+		End:             r.End,
+		TZ:              tzName(r.Start),
+		RevenueStatuses: model.RevenueInvoiceStatuses,
+		JobStatuses:     model.BookedJobStatuses,
 	}
 }
 
@@ -142,7 +156,15 @@ func (s *DashboardService) Payments(ctx context.Context, r daterange.Range) (mod
 	if err != nil {
 		return model.Breakdown{}, fmt.Errorf("payments widget: %w", err)
 	}
-	return fillBreakdown(nil, rows, byAmount), nil
+	// Every method is listed, biggest amount first; methods without payments come last, in name order.
+	b := fillBreakdown(model.PaymentMethods, rows, byAmount)
+	slices.SortStableFunc(b.Rows, func(x, y model.BreakdownRow) int {
+		if c := y.Amount.Cmp(x.Amount); c != 0 {
+			return c
+		}
+		return cmp.Compare(x.Key, y.Key)
+	})
+	return b, nil
 }
 
 // RevenueByStaff returns revenue per staff member for r, biggest first. Invoices with no job,
@@ -156,14 +178,17 @@ func (s *DashboardService) RevenueByStaff(ctx context.Context, r daterange.Range
 	}
 
 	w := model.StaffRevenue{Rows: make([]model.StaffRevenueRow, len(rows)), TotalAmount: decimal.Zero}
-	for _, row := range rows {
+	amounts := make([]decimal.Decimal, len(rows))
+	for i, row := range rows {
 		w.TotalAmount = w.TotalAmount.Add(row.Amount)
+		amounts[i] = row.Amount
 	}
+	pct := Shares(amounts)
 	for i, row := range rows {
 		if row.StaffID == nil {
 			row.Name = OtherStaffLabel
 		}
-		row.Percent = percent(row.Amount, w.TotalAmount)
+		row.Percent = pct[i]
 		w.Rows[i] = row
 	}
 	return w, nil
@@ -172,26 +197,38 @@ func (s *DashboardService) RevenueByStaff(ctx context.Context, r daterange.Range
 // ActiveServices returns incomplete jobs in r grouped by service, biggest first.
 // Percent is each service's share of the amount.
 func (s *DashboardService) ActiveServices(ctx context.Context, r daterange.Range) (model.ActiveServices, error) {
-	rows, err := s.repo.ActiveServices(ctx, model.ServicesQuery{
-		Start: r.Start, End: r.End, Statuses: model.ActiveJobStatuses,
+	q := model.ServicesQuery{Start: r.Start, End: r.End, Statuses: model.ActiveJobStatuses}
+	// One snapshot, so the per-service rows and the customer totals describe the same jobs.
+	var rows []model.ServiceRow
+	var customers model.ServiceCustomers
+	err := s.repo.WithTx(ctx, model.TxOptions{ReadOnly: true, Snapshot: true}, func(ctx context.Context) error {
+		var err error
+		if rows, err = s.repo.ActiveServices(ctx, q); err != nil {
+			return err
+		}
+		customers, err = s.repo.ActiveServiceCustomers(ctx, q)
+		return err
 	})
 	if err != nil {
 		return model.ActiveServices{}, fmt.Errorf("active services widget: %w", err)
 	}
 
-	w := model.ActiveServices{Rows: make([]model.ServiceRow, len(rows)), TotalAmount: decimal.Zero}
-	for _, row := range rows {
+	w := model.ActiveServices{Rows: make([]model.ServiceRow, len(rows)), TotalAmount: decimal.Zero, ServiceCustomers: customers}
+	amounts := make([]decimal.Decimal, len(rows))
+	for i, row := range rows {
+		amounts[i] = row.Amount
 		w.TotalCount += row.Count
 		w.TotalAmount = w.TotalAmount.Add(row.Amount)
 		if row.IsRecurring {
 			w.RecurringCount += row.Count
 		}
 	}
+	pct := Shares(amounts)
 	for i, row := range rows {
 		if row.ServiceID == nil {
 			row.Name = NoServiceLabel
 		}
-		row.Percent = percent(row.Amount, w.TotalAmount)
+		row.Percent = pct[i]
 		w.Rows[i] = row
 	}
 	return w, nil
@@ -209,13 +246,28 @@ func (s *DashboardService) Tags(ctx context.Context, scope string) (model.TagUsa
 		return model.TagUsage{}, fmt.Errorf("tags widget: %w", err)
 	}
 
-	w := model.TagUsage{Scope: scope, Rows: make([]model.TagRow, len(rows))}
-	for _, row := range rows {
-		w.TotalCount += row.Count
-	}
+	// Shares are taken over every tag, then the tail past MaxTagRows is folded into one row,
+	// so the percents still add up to 100.
+	w := model.TagUsage{Scope: scope, Rows: make([]model.TagRow, 0, min(len(rows), model.MaxTagRows+1))}
+	counts := make([]decimal.Decimal, len(rows))
 	for i, row := range rows {
-		row.Percent = percent(decimal.NewFromInt(row.Count), decimal.NewFromInt(w.TotalCount))
-		w.Rows[i] = row
+		w.TotalCount += row.Count
+		counts[i] = decimal.NewFromInt(row.Count)
+	}
+	pct := Shares(counts)
+	var other model.TagRow
+	for i, row := range rows {
+		row.Percent = pct[i]
+		if i < model.MaxTagRows {
+			w.Rows = append(w.Rows, row)
+			continue
+		}
+		other.Count += row.Count
+		other.Percent = decimal.NewFromFloat(other.Percent).Add(decimal.NewFromFloat(row.Percent)).InexactFloat64()
+	}
+	if len(rows) > model.MaxTagRows {
+		other.Name = OtherTagsLabel
+		w.Rows = append(w.Rows, other)
 	}
 	return w, nil
 }
@@ -259,26 +311,55 @@ func fillBreakdown(order []string, rows []model.BreakdownRow, basis percentBasis
 	}
 
 	b := model.Breakdown{Rows: out, TotalAmount: decimal.Zero}
-	for _, row := range out {
+	parts := make([]decimal.Decimal, len(out))
+	for i, row := range out {
 		b.TotalCount += row.Count
 		b.TotalAmount = b.TotalAmount.Add(row.Amount)
-	}
-	for i := range b.Rows {
+		parts[i] = row.Amount
 		if basis == byCount {
-			b.Rows[i].Percent = percent(decimal.NewFromInt(b.Rows[i].Count), decimal.NewFromInt(b.TotalCount))
-		} else {
-			b.Rows[i].Percent = percent(b.Rows[i].Amount, b.TotalAmount)
+			parts[i] = decimal.NewFromInt(row.Count)
 		}
+	}
+	for i, p := range Shares(parts) {
+		b.Rows[i].Percent = p
 	}
 	return b
 }
 
-// percent returns part/whole as a 0–100 value rounded to 2 decimals, or 0 when whole is 0.
-func percent(part, whole decimal.Decimal) float64 {
+// Shares returns each part's share of their sum as a 0–100 value with 2 decimals.
+// Rounding each share on its own can make them add up to 99.99 or 100.01, so it uses the
+// largest-remainder method: floor every share to 0.01, then give the 0.01s still missing from
+// 100.00 to the shares that lost the most, earlier rows first on ties. All zeros give all zeros.
+func Shares(parts []decimal.Decimal) []float64 {
+	const units = 10000 // hundredths of a percent in 100%
+	out := make([]float64, len(parts))
+	whole := decimal.Sum(decimal.Zero, parts...)
 	if whole.IsZero() {
-		return 0
+		return out
 	}
-	return part.Div(whole).Mul(decimal.NewFromInt(100)).Round(2).InexactFloat64()
+
+	floors := make([]int64, len(parts))
+	remainders := make([]decimal.Decimal, len(parts))
+	missing := int64(units)
+	for i, p := range parts {
+		exact := p.Mul(decimal.NewFromInt(units)).Div(whole)
+		floors[i] = exact.Floor().IntPart()
+		remainders[i] = exact.Sub(exact.Floor())
+		missing -= floors[i]
+	}
+
+	order := make([]int, len(parts))
+	for i := range order {
+		order[i] = i
+	}
+	slices.SortStableFunc(order, func(a, b int) int { return remainders[b].Cmp(remainders[a]) })
+	for _, i := range order[:missing] {
+		floors[i]++
+	}
+	for i, f := range floors {
+		out[i] = decimal.New(f, -2).InexactFloat64()
+	}
+	return out
 }
 
 // fillDaily returns one entry per day in r, with a count for every job status.

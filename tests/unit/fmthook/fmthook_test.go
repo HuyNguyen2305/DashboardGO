@@ -46,18 +46,18 @@ func TestCommands(t *testing.T) {
 			file: in("internal/service/dashboard.go"),
 			want: []string{
 				"gofmt -w <project>/internal/service/dashboard.go @.",
-				"golangci-lint run --fix ./internal/service/ @.",
+				"golangci-lint run --output.json.path=stdout --output.text.path=stderr --show-stats=false ./internal/service/ @.",
 			},
 		},
 		{
 			name: "go file in the project root",
 			file: in("main.go"),
-			want: []string{"gofmt -w <project>/main.go @.", "golangci-lint run --fix ./ @."},
+			want: []string{"gofmt -w <project>/main.go @.", "golangci-lint run --output.json.path=stdout --output.text.path=stderr --show-stats=false ./ @."},
 		},
 		{
 			name: "relative path is resolved against the project",
 			file: "cmd/api/main.go",
-			want: []string{"gofmt -w <project>/cmd/api/main.go @.", "golangci-lint run --fix ./cmd/api/ @."},
+			want: []string{"gofmt -w <project>/cmd/api/main.go @.", "golangci-lint run --output.json.path=stdout --output.text.path=stderr --show-stats=false ./cmd/api/ @."},
 		},
 		{
 			name: "sqlc output gets gofmt only",
@@ -117,5 +117,50 @@ func TestCommandsHandlesWindowsPaths(t *testing.T) {
 	cmds := fmthook.Commands(`e:\DashboardGO\internal\dto\error.go`, `E:\DashboardGO`, false)
 	require.Len(t, cmds, 2)
 	assert.Equal(t, "gofmt", cmds[0].Name)
-	assert.Equal(t, []string{"run", "--fix", "./internal/dto/"}, cmds[1].Args)
+	assert.Equal(t, "./internal/dto/", cmds[1].Args[len(cmds[1].Args)-1])
+	assert.Equal(t, "internal/dto/error.go", cmds[1].OnlyFile)
+}
+
+func TestLintIsFilteredToTheEditedFile(t *testing.T) {
+	project := t.TempDir()
+	cmds := fmthook.Commands(filepath.Join(project, "internal", "service", "dashboard.go"), project, false)
+	require.Len(t, cmds, 2)
+	assert.Equal(t, "internal/service/dashboard.go", cmds[1].OnlyFile)
+	assert.NotContains(t, cmds[1].Args, "--fix", "lint must not rewrite other files of the package")
+	assert.Empty(t, cmds[0].OnlyFile, "gofmt output is never filtered")
+}
+
+func TestIssuesFor(t *testing.T) {
+	report := `{"Issues":[
+		{"FromLinter":"errcheck","Text":"Error return value is not checked","Pos":{"Filename":"internal/service/dashboard.go","Line":12,"Column":3}},
+		{"FromLinter":"gosec","Text":"G104","Pos":{"Filename":"internal\\service\\other.go","Line":4,"Column":1}},
+		{"FromLinter":"misspell","Text":"misspelled","Pos":{"Filename":"internal\\service\\dashboard.go","Line":30,"Column":9}}
+	],"Report":{}}`
+	cases := []struct {
+		name, report, file string
+		want               []string
+		wantTotal          int
+		wantErr            bool
+	}{
+		{"keeps the edited file, in either slash style", report, "internal/service/dashboard.go", []string{
+			"internal/service/dashboard.go:12:3: Error return value is not checked (errcheck)",
+			"internal/service/dashboard.go:30:9: misspelled (misspell)",
+		}, 3, false},
+		{"issues only in other files", report, "internal/service/stats.go", nil, 3, false},
+		{"clean report", `{"Issues":[],"Report":{}}`, "a.go", nil, 0, false},
+		{"empty output means golangci-lint failed", "", "a.go", nil, 0, true},
+		{"text instead of JSON", "level=error msg=typechecking error", "a.go", nil, 0, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, total, err := fmthook.IssuesFor([]byte(tc.report), tc.file)
+			if tc.wantErr {
+				require.Error(t, err)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tc.want, got)
+			assert.Equal(t, tc.wantTotal, total)
+		})
+	}
 }

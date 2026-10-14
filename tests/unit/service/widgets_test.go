@@ -40,12 +40,19 @@ func keys(rows []model.BreakdownRow) []string {
 	return out
 }
 
+// expectSnapshot makes repo run WithTx's fn directly, and requires the read-only snapshot the Jobs widget asks for.
+func expectSnapshot(repo *mocks.MockDashboardRepository) {
+	repo.EXPECT().WithTx(mock.Anything, model.TxOptions{ReadOnly: true, Snapshot: true}, mock.Anything).
+		RunAndReturn(func(ctx context.Context, _ model.TxOptions, fn func(context.Context) error) error { return fn(ctx) }).Once()
+}
+
 func TestJobsWidget(t *testing.T) {
 	r, err := resolver(t).Preset(daterange.ThisMonth)
 	require.NoError(t, err)
-	wantQuery := model.JobsQuery{Start: r.Start, End: r.End, TZ: "Asia/Ho_Chi_Minh", StaffIDs: []int64{1, 2}}
+	wantQuery := model.JobsQuery{Start: r.Start, End: r.End, TZ: "Asia/Ho_Chi_Minh", Staff: model.StaffFilter{IDs: []int64{1, 2}}}
 
 	repo := mocks.NewMockDashboardRepository(t)
+	expectSnapshot(repo)
 	repo.EXPECT().JobStatusBreakdown(mock.Anything, wantQuery).Return([]model.BreakdownRow{
 		{Key: "terminated", Count: 1, Amount: dec("65.00")},
 		{Key: "incomplete", Count: 18, Amount: dec("1371.24")},
@@ -57,7 +64,7 @@ func TestJobsWidget(t *testing.T) {
 		{Day: time.Date(2026, 10, 31, 0, 0, 0, 0, time.UTC), Status: "terminated", Count: 1},
 	}, nil).Once()
 
-	w, err := service.NewDashboardService(repo).Jobs(context.Background(), r, []int64{1, 2})
+	w, err := service.NewDashboardService(repo).Jobs(context.Background(), r, model.StaffFilter{IDs: []int64{1, 2}})
 	require.NoError(t, err)
 
 	// Every status in dashboard order; percent is by count (18/33, 14/33, 1/33).
@@ -105,9 +112,9 @@ func TestDocumentWidgetsUseAmountPercentAndOrder(t *testing.T) {
 				{Key: "void", Count: 1, Amount: dec("65.00")},
 				{Key: "sent", Count: 8, Amount: dec("555.14")},
 			},
-			wantKeys: []string{"draft", "void", "sent", "partial", "partial_paid", "paid", "write_off", "failed"},
+			wantKeys: []string{"draft", "void", "sent", "partial_paid", "paid", "write_off", "failed"},
 			// Screenshot: 47%, 2%, 19%, 32% — by amount, not by count.
-			wantPct: map[string]float64{"draft": 47.04, "void": 2.22, "sent": 18.94, "paid": 31.81, "partial": 0},
+			wantPct: map[string]float64{"draft": 47.03, "void": 2.22, "sent": 18.94, "paid": 31.81, "partial_paid": 0},
 		},
 		{
 			name:    "estimates",
@@ -180,19 +187,19 @@ func TestInvoiceAgingWidget(t *testing.T) {
 
 	repo := mocks.NewMockDashboardRepository(t)
 	repo.EXPECT().InvoiceAging(mock.Anything, model.AgingQuery{
-		AsOf: asOf, TZ: "Asia/Ho_Chi_Minh", Statuses: []string{"sent", "partial", "partial_paid"},
+		AsOf: asOf, TZ: "Asia/Ho_Chi_Minh", Statuses: []string{"sent", "partial_paid", "failed"},
 	}).Return([]model.BreakdownRow{
 		{Key: "61_90", Count: 1, Amount: dec("95.00")},
-		{Key: "0_30", Count: 11, Amount: dec("647.91")},
+		{Key: "1_30", Count: 11, Amount: dec("647.91")},
 	}, nil).Once()
 
 	w, err := service.NewDashboardService(repo).InvoiceAging(context.Background(), asOf)
 	require.NoError(t, err)
 	assert.Equal(t, asOf, w.AsOf)
-	assert.Equal(t, []string{"0_30", "31_60", "61_90", "90_plus"}, keys(w.Rows))
+	assert.Equal(t, []string{"current", "1_30", "31_60", "61_90", "90_plus"}, keys(w.Rows))
 	// Screenshot: 87% and 13%.
-	assert.InDelta(t, 87.21, w.Rows[0].Percent, 0.001)
-	assert.InDelta(t, 12.79, w.Rows[2].Percent, 0.001)
+	assert.InDelta(t, 87.21, w.Rows[1].Percent, 0.001)
+	assert.InDelta(t, 12.79, w.Rows[3].Percent, 0.001)
 	assert.True(t, w.TotalAmount.Equal(dec("742.91")))
 	assert.Equal(t, int64(12), w.TotalCount)
 }
@@ -202,9 +209,8 @@ func TestYearSeriesWidgets(t *testing.T) {
 	require.NoError(t, err)
 	wantQuery := model.MonthlyQuery{
 		Start: r.Start, End: r.End, TZ: "Asia/Ho_Chi_Minh",
-		RevenueStatuses:          []string{"sent", "partial", "partial_paid", "paid"},
-		ForecastEstimateStatuses: []string{"draft", "pending", "won", "invoiced"},
-		ForecastInvoiceStatuses:  []string{"sent", "partial", "partial_paid", "paid"},
+		RevenueStatuses: []string{"sent", "partial_paid", "paid"},
+		JobStatuses:     []string{"incomplete", "completed", "reschedule", "workpool"},
 	}
 	repoMonths := []model.MonthlyAmount{
 		{Month: time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC), Amount: dec("380.00")},
@@ -253,19 +259,20 @@ func TestYearSeriesWidgets(t *testing.T) {
 	}
 }
 
-func TestPaymentsWidgetKeepsRepositoryOrder(t *testing.T) {
+func TestPaymentsWidgetListsEveryMethodBiggestFirst(t *testing.T) {
 	r, err := resolver(t).Preset(daterange.ThisMonth)
 	require.NoError(t, err)
 
 	repo := mocks.NewMockDashboardRepository(t)
 	repo.EXPECT().PaymentsByMethod(mock.Anything, model.PeriodQuery{Start: r.Start, End: r.End}).Return([]model.BreakdownRow{
-		{Key: "check", Count: 11, Amount: dec("715.00")},
 		{Key: "stripe", Count: 1, Amount: dec("152.26")},
+		{Key: "check", Count: 11, Amount: dec("715.00")},
 	}, nil).Once()
 
 	b, err := service.NewDashboardService(repo).Payments(context.Background(), r)
 	require.NoError(t, err)
-	assert.Equal(t, []string{"check", "stripe"}, keys(b.Rows))
+	assert.Equal(t, []string{"check", "stripe", "card", "cash", "other"}, keys(b.Rows), "zero rows last, by name")
+	assert.Equal(t, int64(12), b.TotalCount)
 	// Screenshot: 82% and 18%.
 	assert.InDelta(t, 82.44, b.Rows[0].Percent, 0.001)
 	assert.InDelta(t, 17.56, b.Rows[1].Percent, 0.001)
@@ -282,12 +289,26 @@ func TestWidgetErrorsAreWrapped(t *testing.T) {
 		call   func(*service.DashboardService) error
 	}{
 		{"jobs breakdown", func(m *mocks.MockDashboardRepository) {
+			expectSnapshot(m)
 			m.EXPECT().JobStatusBreakdown(mock.Anything, mock.Anything).Return(nil, dbErr).Once()
-		}, func(s *service.DashboardService) error { _, err := s.Jobs(context.Background(), r, nil); return err }},
+		}, func(s *service.DashboardService) error {
+			_, err := s.Jobs(context.Background(), r, model.StaffFilter{})
+			return err
+		}},
 		{"jobs daily", func(m *mocks.MockDashboardRepository) {
+			expectSnapshot(m)
 			m.EXPECT().JobStatusBreakdown(mock.Anything, mock.Anything).Return(nil, nil).Once()
 			m.EXPECT().JobDailyCounts(mock.Anything, mock.Anything).Return(nil, dbErr).Once()
-		}, func(s *service.DashboardService) error { _, err := s.Jobs(context.Background(), r, nil); return err }},
+		}, func(s *service.DashboardService) error {
+			_, err := s.Jobs(context.Background(), r, model.StaffFilter{})
+			return err
+		}},
+		{"jobs transaction", func(m *mocks.MockDashboardRepository) {
+			m.EXPECT().WithTx(mock.Anything, mock.Anything, mock.Anything).Return(dbErr).Once()
+		}, func(s *service.DashboardService) error {
+			_, err := s.Jobs(context.Background(), r, model.StaffFilter{})
+			return err
+		}},
 		{"invoices", func(m *mocks.MockDashboardRepository) {
 			m.EXPECT().DocumentStatusBreakdown(mock.Anything, mock.Anything).Return(nil, dbErr).Once()
 		}, func(s *service.DashboardService) error { _, err := s.Invoices(context.Background(), r); return err }},

@@ -50,13 +50,16 @@ func testSecondaryWidgets(t *testing.T, env testEnv) {
 			Range:          october,
 			TotalCount:     18,
 			RecurringCount: 6,
-			TotalAmount:    "1371.24",
+			// Every seeded job belongs to the one seed customer.
+			CustomerCount:          1,
+			RecurringCustomerCount: 1,
+			TotalAmount:            "1371.24",
 			Rows: []dto.ServiceRow{
-				{ServiceID: ptr(env.serviceID(t, "Blank Service")), Name: "Blank Service", Count: 8, Amount: "587.52", Percent: 42.85},
-				{ServiceID: ptr(env.serviceID(t, "Bi-Monthly Service")), Name: "Bi-Monthly Service", IsRecurring: true, Count: 4, Amount: "293.76", Percent: 21.42},
-				{ServiceID: ptr(env.serviceID(t, "Initial Service")), Name: "Initial Service", Count: 3, Amount: "266.90", Percent: 19.46},
-				{ServiceID: ptr(env.serviceID(t, "Every 21 Days")), Name: "Every 21 Days", IsRecurring: true, Count: 2, Amount: "146.88", Percent: 10.71},
-				{ServiceID: nil, Name: "No service", Count: 1, Amount: "76.18", Percent: 5.56},
+				{ServiceID: ptr(env.serviceID(t, "Blank Service")), Name: "Blank Service", Count: 8, CustomerCount: 1, Amount: "587.52", Percent: 42.85},
+				{ServiceID: ptr(env.serviceID(t, "Bi-Monthly Service")), Name: "Bi-Monthly Service", IsRecurring: true, Count: 4, CustomerCount: 1, Amount: "293.76", Percent: 21.42},
+				{ServiceID: ptr(env.serviceID(t, "Initial Service")), Name: "Initial Service", Count: 3, CustomerCount: 1, Amount: "266.90", Percent: 19.46},
+				{ServiceID: ptr(env.serviceID(t, "Every 21 Days")), Name: "Every 21 Days", IsRecurring: true, Count: 2, CustomerCount: 1, Amount: "146.88", Percent: 10.71},
+				{ServiceID: nil, Name: "No service", Count: 1, CustomerCount: 1, Amount: "76.18", Percent: 5.56},
 			},
 		}, got)
 	})
@@ -77,7 +80,14 @@ func testSecondaryWidgets(t *testing.T, env testEnv) {
 			total int64
 		}{
 			// Screenshot: 1233 and a456 at 50% each; the unused tag is not listed.
-			{"location (default)", "", []dto.TagRow{{Name: "1233", Count: 1, Percent: 50}, {Name: "a456", Count: 1, Percent: 50}}, 2},
+			{"location (default)", "", []dto.TagRow{
+				{Name: "1233", Count: 1, CustomerCount: ptr(int64(1)), Percent: 50},
+				{Name: "a456", Count: 1, CustomerCount: ptr(int64(1)), Percent: 50},
+			}, 2},
+			{"empty scope means location", "?scope=", []dto.TagRow{
+				{Name: "1233", Count: 1, CustomerCount: ptr(int64(1)), Percent: 50},
+				{Name: "a456", Count: 1, CustomerCount: ptr(int64(1)), Percent: 50},
+			}, 2},
 			{"customer", "?scope=customer", []dto.TagRow{{Name: "vip", Count: 2, Percent: 66.67}, {Name: "late-payer", Count: 1, Percent: 33.33}}, 3},
 		}
 		for _, tc := range cases {
@@ -87,8 +97,8 @@ func testSecondaryWidgets(t *testing.T, env testEnv) {
 				assert.Equal(t, tc.total, got.TotalCount)
 				require.Len(t, got.Rows, len(tc.want))
 				for i, want := range tc.want {
-					assert.NotZero(t, got.Rows[i].TagID)
-					got.Rows[i].TagID = 0
+					require.NotNil(t, got.Rows[i].TagID)
+					got.Rows[i].TagID = nil
 					assert.Equal(t, want, got.Rows[i])
 				}
 			})

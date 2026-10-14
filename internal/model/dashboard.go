@@ -10,22 +10,28 @@ import (
 
 // Status sets that decide which documents count toward dashboard money figures.
 var (
-	// RevenueInvoiceStatuses are invoices that count as earned revenue.
-	RevenueInvoiceStatuses = []string{"sent", "partial", "partial_paid", "paid"}
-	// ForecastEstimateStatuses are estimates still expected to turn into work (everything but lost).
-	ForecastEstimateStatuses = []string{"draft", "pending", "won", "invoiced"}
-	// ForecastInvoiceStatuses are invoices counted in Sales Forecast and Total New Jobs.
-	ForecastInvoiceStatuses = []string{"sent", "partial", "partial_paid", "paid"}
+	// RevenueInvoiceStatuses are invoices that count as revenue (billed, tax excluded: their subtotal).
+	RevenueInvoiceStatuses = []string{"sent", "partial_paid", "paid"}
+	// NewJobsEstimateStatuses are estimates counted in Total New Jobs: still expected to turn into work (everything but lost).
+	NewJobsEstimateStatuses = []string{"draft", "pending", "won", "invoiced"}
+	// NewJobsInvoiceStatuses are invoices counted in Total New Jobs.
+	NewJobsInvoiceStatuses = []string{"sent", "partial_paid", "paid"}
 	// AgingInvoiceStatuses are invoices sent to the customer and not fully paid.
-	AgingInvoiceStatuses = []string{"sent", "partial", "partial_paid"}
+	// A failed invoice (its payment failed) is still owed, so it ages too.
+	AgingInvoiceStatuses = []string{"sent", "partial_paid", "failed"}
+	// BookedJobStatuses are jobs still on the books (not canceled or terminated). They count in
+	// New Jobs Booked Online and in the Sales Forecast.
+	BookedJobStatuses = []string{"incomplete", "completed", "reschedule", "workpool"}
 )
 
 // Row order of the breakdown widgets, as shown on the dashboard.
 var (
 	JobStatuses      = []string{"incomplete", "completed", "reschedule", "canceled", "terminated", "workpool"}
-	InvoiceStatuses  = []string{"draft", "void", "sent", "partial", "partial_paid", "paid", "write_off", "failed"}
+	InvoiceStatuses  = []string{"draft", "void", "sent", "partial_paid", "paid", "write_off", "failed"}
 	EstimateStatuses = []string{"draft", "pending", "won", "invoiced", "lost"}
-	AgingBuckets     = []string{"0_30", "31_60", "61_90", "90_plus"}
+	AgingBuckets     = []string{"current", "1_30", "31_60", "61_90", "90_plus"}
+	// PaymentMethods matches the payments.method CHECK. The Payments widget lists them biggest amount first.
+	PaymentMethods = []string{"check", "stripe", "cash", "card", "other"}
 )
 
 // Document types stored in the documents table.
@@ -36,10 +42,11 @@ const (
 
 // StatsQuery selects the data behind the top Stats row.
 type StatsQuery struct {
-	Start, End               time.Time
-	RevenueStatuses          []string
-	ForecastEstimateStatuses []string
-	ForecastInvoiceStatuses  []string
+	Start, End              time.Time
+	RevenueStatuses         []string
+	NewJobsEstimateStatuses []string
+	NewJobsInvoiceStatuses  []string
+	OnlineJobStatuses       []string
 }
 
 // DashboardStats is the top Stats row.
@@ -56,12 +63,27 @@ type PeriodQuery struct {
 	Start, End time.Time
 }
 
-// JobsQuery selects jobs scheduled within [Start, End). Empty StaffIDs means all schedules.
+// TxOptions configures a repository transaction.
+type TxOptions struct {
+	// ReadOnly rejects writes.
+	ReadOnly bool
+	// Snapshot makes every query see the database as of the first one (REPEATABLE READ).
+	Snapshot bool
+}
+
+// StaffFilter is the Schedules filter of the Jobs widget. IDs selects those staff members and
+// Unassigned selects jobs with no staff; the zero value means all schedules.
+type StaffFilter struct {
+	IDs        []int64
+	Unassigned bool
+}
+
+// JobsQuery selects jobs scheduled within [Start, End), limited by Staff.
 // TZ is the IANA zone used to group by local day.
 type JobsQuery struct {
 	Start, End time.Time
 	TZ         string
-	StaffIDs   []int64
+	Staff      StaffFilter
 }
 
 // DocumentsQuery selects documents of one type issued within [Start, End).
@@ -78,12 +100,12 @@ type AgingQuery struct {
 }
 
 // MonthlyQuery selects per-month totals within [Start, End), grouped by local month in TZ.
+// RevenueStatuses filters invoices (Revenue per Month); JobStatuses filters jobs (Sales Forecast).
 type MonthlyQuery struct {
-	Start, End               time.Time
-	TZ                       string
-	RevenueStatuses          []string
-	ForecastEstimateStatuses []string
-	ForecastInvoiceStatuses  []string
+	Start, End      time.Time
+	TZ              string
+	RevenueStatuses []string
+	JobStatuses     []string
 }
 
 // ServicesQuery selects jobs in Statuses scheduled within [Start, End).
@@ -177,28 +199,43 @@ type StaffRevenue struct {
 
 // ServiceRow is one line of Active Services. A nil ServiceID is the "No service" row.
 type ServiceRow struct {
-	ServiceID   *int64
-	Name        string
-	IsRecurring bool
-	Count       int64
-	Amount      decimal.Decimal
-	Percent     float64
+	ServiceID     *int64
+	Name          string
+	IsRecurring   bool
+	Count         int64 // visits (jobs)
+	CustomerCount int64 // distinct customers
+	Amount        decimal.Decimal
+	Percent       float64
+}
+
+// ServiceCustomers counts the distinct customers behind the Active Services widget.
+type ServiceCustomers struct {
+	CustomerCount          int64
+	RecurringCustomerCount int64
 }
 
 // ActiveServices is the Active Services widget.
+// TotalCount and RecurringCount are visits; the ServiceCustomers fields are distinct customers.
 type ActiveServices struct {
 	Rows           []ServiceRow
 	TotalCount     int64
 	RecurringCount int64
 	TotalAmount    decimal.Decimal
+	ServiceCustomers
 }
 
-// TagRow is one tag in use and how many customers or locations carry it.
+// MaxTagRows caps the Tags widget; tags past it are folded into one "Other tags" row.
+const MaxTagRows = 50
+
+// TagRow is one tag in use and how many customers or locations carry it. A nil TagID is the
+// "Other tags" row. CustomerCount is set for location tags only: the distinct customers owning
+// the tagged locations (not for "Other tags", where distinct counts can't be added up).
 type TagRow struct {
-	TagID   int64
-	Name    string
-	Count   int64
-	Percent float64
+	TagID         *int64
+	Name          string
+	Count         int64
+	CustomerCount *int64
+	Percent       float64
 }
 
 // TagUsage is the Tags widget for one scope.

@@ -3,6 +3,7 @@
 package dashboard_test
 
 import (
+	"net/http"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -14,9 +15,10 @@ func TestStatsEndpoint(t *testing.T) {
 	env := newEnv(t)
 
 	cases := []struct {
-		name  string
-		query string
-		want  dto.StatsResponse
+		name       string
+		query      string
+		before2026 bool // serve with the clock in February 2025
+		want       dto.StatsResponse
 	}{
 		{
 			name:  "this month matches the screenshot",
@@ -44,10 +46,11 @@ func TestStatsEndpoint(t *testing.T) {
 			},
 		},
 		{
-			name:  "range with no data returns zeros",
-			query: "?from=2025-01-01&to=2025-12-31",
+			name:       "range with no data returns zeros",
+			query:      "?range=last_month",
+			before2026: true,
 			want: dto.StatsResponse{
-				Range:               dto.DateRange{Preset: "custom", Start: "2025-01-01", End: "2025-12-31"},
+				Range:               dto.DateRange{Preset: "last_month", Start: "2025-01-01", End: "2025-01-31"},
 				Revenue:             "0.00",
 				Collected:           "0.00",
 				JobsCompleted:       0,
@@ -58,9 +61,25 @@ func TestStatsEndpoint(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			e := env
+			if tc.before2026 {
+				e = env.before2026(t)
+			}
 			var got dto.StatsResponse
-			env.getJSON(t, "/api/v1/dashboard/stats"+tc.query, &got)
+			e.getJSON(t, "/api/v1/dashboard/stats"+tc.query, &got)
 			assert.Equal(t, tc.want, got)
 		})
 	}
+
+	t.Run("custom from/to is rejected", func(t *testing.T) {
+		status, body := env.getStatus(t, "/api/v1/dashboard/stats?from=2026-10-01&to=2026-10-05")
+		assert.Equal(t, http.StatusBadRequest, status)
+		assert.Contains(t, body, `unknown query parameter \"from\", \"to\"; allowed: range`)
+	})
+
+	t.Run("empty year means the current year", func(t *testing.T) {
+		var got dto.YearSeriesResponse
+		env.getJSON(t, "/api/v1/dashboard/revenue-per-month?year=", &got)
+		assert.Equal(t, dto.DateRange{Preset: "year", Start: "2026-01-01", End: "2026-12-31"}, got.Range)
+	})
 }

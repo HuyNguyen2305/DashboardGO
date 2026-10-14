@@ -1,4 +1,4 @@
-// Package daterange turns dashboard date pickers (presets, custom dates, years)
+// Package daterange turns dashboard date pickers (fixed presets and years)
 // into half-open [Start, End) ranges in the business timezone.
 //
 // Every widget must resolve its range here so their numbers agree. Queries filter
@@ -14,7 +14,8 @@ import (
 // Preset names a quick-pick option in the date picker.
 type Preset string
 
-// Presets accepted in the `range` query parameter, plus the kinds produced by Custom and Year.
+// Presets accepted in the `range` query parameter, plus the kind produced by Year.
+// Users only pick fixed presets; there are deliberately no custom from/to ranges.
 const (
 	Today       Preset = "today"
 	ThisWeek    Preset = "this_week"
@@ -25,27 +26,19 @@ const (
 	Last3Months Preset = "last_3_months"
 	Last6Months Preset = "last_6_months"
 	ThisYear    Preset = "this_year"
-	Custom      Preset = "custom"
 	Year        Preset = "year"
 )
 
-// Limits for user-supplied ranges.
+// Limits for the year picker.
 const (
-	MaxCustomDays = 366
-	MinYear       = 2000
-	MaxYear       = 2100
+	MinYear = 2000
+	MaxYear = 2100
 )
-
-const dateLayout = "2006-01-02"
 
 // Errors returned for invalid input. Handlers map all of them to 400.
 var (
-	ErrUnknownPreset     = errors.New("unknown date range")
-	ErrInvalidDate       = errors.New("invalid date")
-	ErrRangeOrder        = errors.New("invalid date range")
-	ErrRangeTooLong      = errors.New("date range too long")
-	ErrInvalidYear       = errors.New("invalid year")
-	ErrConflictingParams = errors.New("conflicting date parameters")
+	ErrUnknownPreset = errors.New("unknown date range")
+	ErrInvalidYear   = errors.New("invalid year")
 )
 
 // Range is a half-open interval [Start, End) of whole days in the business timezone.
@@ -53,6 +46,19 @@ type Range struct {
 	Preset Preset
 	Start  time.Time
 	End    time.Time
+}
+
+// CapAt returns the range with End moved back to t when t falls before it, so rows dated
+// after t (for example future-dated payments in "This Month") are left out. Start is kept,
+// and End never moves before Start. The result is for querying; responses still echo r.
+func (r Range) CapAt(t time.Time) Range {
+	switch {
+	case t.Before(r.Start):
+		r.End = r.Start
+	case t.Before(r.End):
+		r.End = t
+	}
+	return r
 }
 
 // LastDay returns the last day included in the range (End minus one calendar day).
@@ -91,6 +97,11 @@ type Resolver struct {
 // NewResolver returns a Resolver for loc. Pass time.Now in production and a fixed clock in tests.
 func NewResolver(loc *time.Location, now func() time.Time) *Resolver {
 	return &Resolver{loc: loc, now: now}
+}
+
+// Now returns the current instant in the business timezone.
+func (r *Resolver) Now() time.Time {
+	return r.now().In(r.loc)
 }
 
 // CurrentYear returns the current year in the business timezone.
@@ -137,33 +148,6 @@ func (r *Resolver) Preset(p Preset) (Range, error) {
 	return Range{Preset: p, Start: start, End: end}, nil
 }
 
-// Custom resolves an inclusive from/to pair of YYYY-MM-DD dates, at most MaxCustomDays long.
-func (r *Resolver) Custom(from, to string) (Range, error) {
-	if from == "" || to == "" {
-		return Range{}, fmt.Errorf("%w: from and to are both required", ErrInvalidDate)
-	}
-	fy, fm, fd, err := parseDate("from", from)
-	if err != nil {
-		return Range{}, err
-	}
-	ty, tm, td, err := parseDate("to", to)
-	if err != nil {
-		return Range{}, err
-	}
-
-	// Count calendar days in UTC, where every day is exactly 24h.
-	days := int(time.Date(ty, tm, td, 0, 0, 0, 0, time.UTC).
-		Sub(time.Date(fy, fm, fd, 0, 0, 0, 0, time.UTC)).Hours()/24) + 1
-	switch {
-	case days < 1:
-		return Range{}, fmt.Errorf("%w: from %s is after to %s", ErrRangeOrder, from, to)
-	case days > MaxCustomDays:
-		return Range{}, fmt.Errorf("%w: %d days, maximum is %d", ErrRangeTooLong, days, MaxCustomDays)
-	}
-
-	return Range{Preset: Custom, Start: r.date(fy, fm, fd), End: r.date(ty, tm, td+1)}, nil
-}
-
 // Year resolves Jan 1 – Dec 31 of year y, for the yearly charts.
 func (r *Resolver) Year(y int) (Range, error) {
 	if y < MinYear || y > MaxYear {
@@ -175,13 +159,4 @@ func (r *Resolver) Year(y int) (Range, error) {
 // date returns local midnight; time.Date normalizes overflow such as day 0 or month 13.
 func (r *Resolver) date(y int, m time.Month, d int) time.Time {
 	return time.Date(y, m, d, 0, 0, 0, 0, r.loc)
-}
-
-func parseDate(name, s string) (int, time.Month, int, error) {
-	t, err := time.Parse(dateLayout, s)
-	if err != nil {
-		return 0, 0, 0, fmt.Errorf("%w: %s must be a real date in YYYY-MM-DD format, got %q", ErrInvalidDate, name, s)
-	}
-	y, m, d := t.Date()
-	return y, m, d, nil
 }

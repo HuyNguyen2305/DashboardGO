@@ -41,8 +41,10 @@ func TestDays(t *testing.T) {
 func TestDaysAcrossDaylightSaving(t *testing.T) {
 	// 2026-03-08 is 23 hours long in New York; it must still be exactly one day.
 	ny := mustLoad(t, "America/New_York")
-	r, err := resolverAt(ny, 2026, time.March, 10, 12, 0).Custom("2026-03-07", "2026-03-09")
-	require.NoError(t, err)
+	r := daterange.Range{
+		Start: time.Date(2026, time.March, 7, 0, 0, 0, 0, ny),
+		End:   time.Date(2026, time.March, 10, 0, 0, 0, 0, ny),
+	}
 	assert.Equal(t, []string{"2026-03-07", "2026-03-08", "2026-03-09"}, formatAll(r.Days(), "2006-01-02"))
 }
 
@@ -61,8 +63,10 @@ func TestMonths(t *testing.T) {
 		assert.Zero(t, m.Hour())
 	}
 
-	acrossNewYear, err := res.Custom("2026-11-15", "2027-02-03")
-	require.NoError(t, err)
+	acrossNewYear := daterange.Range{
+		Start: time.Date(2026, time.November, 15, 0, 0, 0, 0, hcm),
+		End:   time.Date(2027, time.February, 4, 0, 0, 0, 0, hcm),
+	}
 	assert.Equal(t, []string{"2026-11", "2026-12", "2027-01", "2027-02"}, formatAll(acrossNewYear.Months(), "2006-01"))
 
 	oneDay, err := res.Preset(daterange.Today)

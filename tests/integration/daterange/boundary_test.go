@@ -33,7 +33,7 @@ func TestThisMonthBoundariesInPostgres(t *testing.T) {
 	require.NoError(t, pool.QueryRow(ctx, `
 		WITH c AS (INSERT INTO customers (name) VALUES ('Boundary Co') RETURNING id)
 		INSERT INTO documents (doc_type, status, number, customer_id, total)
-		SELECT 'invoice', 'sent', 'INV-B', id, 1000 FROM c RETURNING id`).Scan(&invoiceID))
+		SELECT 'invoice', 'sent', 'INV-B', id, 2000 FROM c RETURNING id`).Scan(&invoiceID))
 
 	payments := []struct {
 		at     time.Time

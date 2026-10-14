@@ -64,12 +64,16 @@ func run() error {
 	dates := daterange.NewResolver(cfg.BusinessTZ, time.Now)
 	dashboardSvc := service.NewDashboardService(repository.NewDashboardRepository(pool, cfg.DBQueryTimeout))
 
-	router := handler.NewRouter(handler.RouterDeps{
-		Log:         log,
-		CORSOrigins: cfg.CORSOrigins,
-		Health:      handler.NewHealthHandler(pool, 2*time.Second),
-		Dashboard:   handler.NewDashboardHandler(dashboardSvc, dates),
+	router, err := handler.NewRouter(handler.RouterDeps{
+		Log:            log,
+		CORSOrigins:    cfg.CORSOrigins,
+		TrustedProxies: cfg.TrustedProxies,
+		Health:         handler.NewHealthHandler(pool, 2*time.Second),
+		Dashboard:      handler.NewDashboardHandler(dashboardSvc, dates),
 	})
+	if err != nil {
+		return err
+	}
 
 	srv := &http.Server{
 		Addr:              fmt.Sprintf(":%d", cfg.Port),
@@ -93,6 +97,8 @@ func run() error {
 		}
 		return nil
 	case <-ctx.Done():
+		// Restore default signal handling so a second Ctrl+C kills a shutdown that hangs.
+		stop()
 		log.Info("shutting down")
 	}
 

@@ -43,11 +43,17 @@ func (r *Runner) Up() error {
 }
 
 // Down reverts the latest steps migrations. steps must be at least 1, so nothing is ever reverted by accident.
+// Asking for more steps than are applied reverts them all and succeeds; golang-migrate reports that
+// as ErrShortLimit only after it has already reverted everything.
 func (r *Runner) Down(steps int) error {
 	if steps < 1 {
 		return fmt.Errorf("migrate down: steps must be at least 1, got %d", steps)
 	}
-	if err := r.m.Steps(-steps); err != nil {
+	err := r.m.Steps(-steps)
+	if errors.As(err, new(migrate.ErrShortLimit)) {
+		return nil
+	}
+	if err != nil {
 		return fmt.Errorf("migrate down %d: %w", steps, err)
 	}
 	return nil

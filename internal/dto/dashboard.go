@@ -85,30 +85,38 @@ type StaffRevenueResponse struct {
 }
 
 // ServiceRow is one line of Active Services. A null ServiceID is the "No service" row.
+// Count is visits (jobs); CustomerCount is the distinct customers behind them.
 type ServiceRow struct {
-	ServiceID   *int64  `json:"service_id"`
-	Name        string  `json:"name"`
-	IsRecurring bool    `json:"is_recurring"`
-	Count       int64   `json:"count"`
-	Amount      string  `json:"amount"`
-	Percent     float64 `json:"percent"`
+	ServiceID     *int64  `json:"service_id"`
+	Name          string  `json:"name"`
+	IsRecurring   bool    `json:"is_recurring"`
+	Count         int64   `json:"count"`
+	CustomerCount int64   `json:"customer_count"`
+	Amount        string  `json:"amount"`
+	Percent       float64 `json:"percent"`
 }
 
 // ActiveServicesResponse is the Active Services widget.
+// TotalCount and RecurringCount are visits; the customer counts are distinct customers.
 type ActiveServicesResponse struct {
-	Range          DateRange    `json:"range"`
-	TotalCount     int64        `json:"total_count"`
-	RecurringCount int64        `json:"recurring_count"`
-	TotalAmount    string       `json:"total_amount"`
-	Rows           []ServiceRow `json:"rows"`
+	Range                  DateRange    `json:"range"`
+	TotalCount             int64        `json:"total_count"`
+	RecurringCount         int64        `json:"recurring_count"`
+	CustomerCount          int64        `json:"customer_count"`
+	RecurringCustomerCount int64        `json:"recurring_customer_count"`
+	TotalAmount            string       `json:"total_amount"`
+	Rows                   []ServiceRow `json:"rows"`
 }
 
 // TagRow is one tag in use.
+// A null TagID is the "Other tags" row. CustomerCount is only present for location tags:
+// the distinct customers owning the tagged locations.
 type TagRow struct {
-	TagID   int64   `json:"tag_id"`
-	Name    string  `json:"name"`
-	Count   int64   `json:"count"`
-	Percent float64 `json:"percent"`
+	TagID         *int64  `json:"tag_id"`
+	Name          string  `json:"name"`
+	Count         int64   `json:"count"`
+	CustomerCount *int64  `json:"customer_count,omitempty"`
+	Percent       float64 `json:"percent"`
 }
 
 // TagsResponse is the Tags widget for one scope.

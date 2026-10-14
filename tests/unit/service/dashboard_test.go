@@ -36,11 +36,12 @@ func TestStatsPassesRangeAndStatusRules(t *testing.T) {
 
 	repo := mocks.NewMockDashboardRepository(t)
 	repo.EXPECT().Stats(mock.Anything, model.StatsQuery{
-		Start:                    r.Start,
-		End:                      r.End,
-		RevenueStatuses:          []string{"sent", "partial", "partial_paid", "paid"},
-		ForecastEstimateStatuses: []string{"draft", "pending", "won", "invoiced"},
-		ForecastInvoiceStatuses:  []string{"sent", "partial", "partial_paid", "paid"},
+		Start:                   r.Start,
+		End:                     r.End,
+		RevenueStatuses:         []string{"sent", "partial_paid", "paid"},
+		NewJobsEstimateStatuses: []string{"draft", "pending", "won", "invoiced"},
+		NewJobsInvoiceStatuses:  []string{"sent", "partial_paid", "paid"},
+		OnlineJobStatuses:       []string{"incomplete", "completed", "reschedule", "workpool"},
 	}).Return(want, nil).Once()
 
 	got, err := service.NewDashboardService(repo).Stats(context.Background(), r)

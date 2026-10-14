@@ -192,7 +192,7 @@ var (
 	}
 	futureJobStatusWeights = []weighted[string]{{"incomplete", 80}, {"reschedule", 10}, {"workpool", 10}}
 	invoiceStatusWeights   = []weighted[string]{
-		{"paid", 55}, {"sent", 15}, {"partial", 8}, {"partial_paid", 5},
+		{"paid", 55}, {"sent", 15}, {"partial_paid", 13},
 		{"draft", 8}, {"void", 3}, {"write_off", 3}, {"failed", 3},
 	}
 	estimateStatusWeights = []weighted[string]{
@@ -351,7 +351,8 @@ func (g *generator) job(c Customer, loc Location) {
 		j.StaffID = &staffID
 	}
 	if status == "completed" {
-		done := scheduled.Add(time.Duration(1+g.r.IntN(3)) * time.Hour)
+		// Finished 1–3 hours after the slot, but never after the last instant data may be dated at.
+		done := minTime(scheduled.Add(time.Duration(1+g.r.IntN(3))*time.Hour), g.now)
 		j.CompletedAt = &done
 	}
 	g.ds.Jobs = append(g.ds.Jobs, j)
@@ -418,7 +419,7 @@ func (g *generator) invoice(customerID int64, jobID, sourceID *int64, svc Servic
 	switch status {
 	case "paid":
 		paid = cents
-	case "partial", "partial_paid":
+	case "partial_paid":
 		paid = cents * int64(30+g.r.IntN(41)) / 100
 	}
 	due := calendarDate(issued).AddDate(0, 0, 14)

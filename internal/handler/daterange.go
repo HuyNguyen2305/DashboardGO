@@ -2,6 +2,7 @@ package handler
 
 import (
 	"fmt"
+	"strconv"
 
 	"github.com/gin-gonic/gin"
 
@@ -9,36 +10,31 @@ import (
 	"dashboardgo/internal/dto"
 )
 
-// ParseRange reads ?range= or ?from=&to= from the request. With neither, it defaults to This Month.
+// ParseRange reads the ?range=<preset> picker. Without it, it defaults to This Month.
+// Custom from/to ranges are not a product feature, so they are rejected rather than silently ignored.
 func ParseRange(c *gin.Context, dates *daterange.Resolver) (daterange.Range, error) {
-	var q dto.RangeQuery
-	if err := c.ShouldBindQuery(&q); err != nil {
-		return daterange.Range{}, fmt.Errorf("%w: %w", daterange.ErrInvalidDate, err)
+	q := c.Request.URL.Query()
+	if q.Has("from") || q.Has("to") {
+		return daterange.Range{}, fmt.Errorf("%w: custom date ranges are not supported, use range=<preset>", ErrInvalidQuery)
 	}
-
-	hasCustom := q.From != "" || q.To != ""
-	switch {
-	case q.Range != "" && hasCustom:
-		return daterange.Range{}, fmt.Errorf("%w: use either range or from/to, not both", daterange.ErrConflictingParams)
-	case hasCustom:
-		return dates.Custom(q.From, q.To)
-	case q.Range != "":
-		return dates.Preset(daterange.Preset(q.Range))
-	default:
-		return dates.Preset(daterange.ThisMonth)
+	if p := q.Get("range"); p != "" {
+		return dates.Preset(daterange.Preset(p))
 	}
+	return dates.Preset(daterange.ThisMonth)
 }
 
-// ParseYear reads ?year= from the request. Without it, it uses the current year.
+// ParseYear reads ?year= from the request. Without it, or when it is empty, it uses the current year.
+// It parses by hand because Gin binds an empty value to 0.
 func ParseYear(c *gin.Context, dates *daterange.Resolver) (daterange.Range, error) {
-	var q dto.YearQuery
-	if err := c.ShouldBindQuery(&q); err != nil {
-		return daterange.Range{}, fmt.Errorf("%w: year must be a whole number", daterange.ErrInvalidYear)
-	}
-	if q.Year == nil {
+	v := c.Query("year")
+	if v == "" {
 		return dates.Year(dates.CurrentYear())
 	}
-	return dates.Year(*q.Year)
+	y, err := strconv.Atoi(v)
+	if err != nil {
+		return daterange.Range{}, fmt.Errorf("%w: year must be a whole number, got %q", daterange.ErrInvalidYear, v)
+	}
+	return dates.Year(y)
 }
 
 // NewDateRange converts a resolved range for responses, with an inclusive end date.

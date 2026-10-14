@@ -60,12 +60,15 @@ func Seed(ctx context.Context, pool *pgxpool.Pool, opts SeedOptions) (Summary, e
 
 	var summary Summary
 	err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
-		if opts.Reset {
-			if _, err := tx.Exec(ctx, "TRUNCATE "+joinTables()+" RESTART IDENTITY CASCADE"); err != nil {
-				return fmt.Errorf("reset tables: %w", err)
+		if !opts.Reset {
+			if err := requireEmpty(ctx, tx); err != nil {
+				return err
 			}
-		} else if err := requireEmpty(ctx, tx); err != nil {
-			return err
+		}
+		// Also on an already empty database: rows removed with DELETE leave the ID counters
+		// past 1, and the screenshot preset refers to its rows by those IDs.
+		if _, err := tx.Exec(ctx, "TRUNCATE "+joinTables()+" RESTART IDENTITY CASCADE"); err != nil {
+			return fmt.Errorf("reset tables: %w", err)
 		}
 
 		if ds == nil {
@@ -97,15 +100,17 @@ func joinTables() string {
 	return out
 }
 
+// requireEmpty fails with ErrNotEmpty when any seeded table has a row.
 func requireEmpty(ctx context.Context, tx pgx.Tx) error {
-	var hasData bool
-	err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM staff) OR EXISTS (SELECT 1 FROM customers)
-	                           OR EXISTS (SELECT 1 FROM services)`).Scan(&hasData)
-	if err != nil {
-		return fmt.Errorf("check for existing data: %w", err)
-	}
-	if hasData {
-		return fmt.Errorf("%w: use reset to replace it", ErrNotEmpty)
+	for _, t := range tables {
+		var hasData bool
+		err := tx.QueryRow(ctx, "SELECT EXISTS (SELECT 1 FROM "+pgx.Identifier{t}.Sanitize()+")").Scan(&hasData)
+		if err != nil {
+			return fmt.Errorf("check %s for existing data: %w", t, err)
+		}
+		if hasData {
+			return fmt.Errorf("%w: %s has rows, use reset to replace them", ErrNotEmpty, t)
+		}
 	}
 	return nil
 }

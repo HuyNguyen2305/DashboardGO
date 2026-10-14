@@ -118,49 +118,6 @@ func TestUnknownPreset(t *testing.T) {
 	}
 }
 
-func TestCustom(t *testing.T) {
-	loc := mustLoad(t, "Asia/Ho_Chi_Minh")
-	res := resolverAt(loc, 2026, time.October, 12, 10, 0)
-
-	valid := []struct {
-		name, from, to  string
-		first, lastIncl string
-	}{
-		{"one month", "2026-10-01", "2026-10-31", "2026-10-01", "2026-10-31"},
-		{"single day", "2026-10-12", "2026-10-12", "2026-10-12", "2026-10-12"},
-		{"future range", "2027-01-01", "2027-03-31", "2027-01-01", "2027-03-31"},
-		{"366 days in a leap year", "2028-01-01", "2028-12-31", "2028-01-01", "2028-12-31"},
-	}
-	for _, tc := range valid {
-		t.Run(tc.name, func(t *testing.T) {
-			r, err := res.Custom(tc.from, tc.to)
-			require.NoError(t, err)
-			assert.Equal(t, daterange.Custom, r.Preset)
-			assertDays(t, r, loc, tc.first, tc.lastIncl)
-		})
-	}
-
-	invalid := []struct {
-		name, from, to string
-		wantErr        error
-	}{
-		{"to before from", "2026-10-31", "2026-10-01", daterange.ErrRangeOrder},
-		{"367 days", "2028-01-01", "2029-01-01", daterange.ErrRangeTooLong},
-		{"missing to", "2026-10-01", "", daterange.ErrInvalidDate},
-		{"missing from", "", "2026-10-31", daterange.ErrInvalidDate},
-		{"wrong format", "10/01/2026", "2026-10-31", daterange.ErrInvalidDate},
-		{"month 13", "2026-13-01", "2026-12-31", daterange.ErrInvalidDate},
-		{"February 30", "2026-02-01", "2026-02-30", daterange.ErrInvalidDate},
-		{"timestamp instead of date", "2026-10-01T00:00:00Z", "2026-10-31", daterange.ErrInvalidDate},
-	}
-	for _, tc := range invalid {
-		t.Run(tc.name, func(t *testing.T) {
-			_, err := res.Custom(tc.from, tc.to)
-			assert.ErrorIs(t, err, tc.wantErr)
-		})
-	}
-}
-
 func TestYear(t *testing.T) {
 	loc := mustLoad(t, "Asia/Ho_Chi_Minh")
 	res := resolverAt(loc, 2026, time.October, 12, 10, 0)
@@ -190,4 +147,38 @@ func TestCurrentYearUsesBusinessTimezone(t *testing.T) {
 	r, err := res.Preset(daterange.Today)
 	require.NoError(t, err)
 	assertDays(t, r, hcm, "2027-01-01", "2027-01-01")
+}
+
+func TestCapAt(t *testing.T) {
+	loc := mustLoad(t, "Asia/Ho_Chi_Minh")
+	month, err := resolverAt(loc, 2026, time.October, 12, 10, 0).Preset(daterange.ThisMonth)
+	require.NoError(t, err)
+	at := func(m time.Month, d, h int) time.Time { return time.Date(2026, m, d, h, 0, 0, 0, loc) }
+
+	cases := []struct {
+		name    string
+		t       time.Time
+		wantEnd time.Time
+	}{
+		{"inside the range moves End to t", at(time.October, 12, 10), at(time.October, 12, 10)},
+		{"after the range keeps End", at(time.November, 5, 0), month.End},
+		{"exactly at End keeps End", month.End, month.End},
+		{"before the range leaves it empty", at(time.September, 1, 0), month.Start},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := month.CapAt(tc.t)
+			assert.True(t, got.End.Equal(tc.wantEnd), "End %s, want %s", got.End, tc.wantEnd)
+			assert.Equal(t, month.Start, got.Start)
+			assert.Equal(t, month.Preset, got.Preset)
+		})
+	}
+}
+
+func TestResolverNow(t *testing.T) {
+	hcm := mustLoad(t, "Asia/Ho_Chi_Minh")
+	utc := time.Date(2026, time.October, 11, 18, 30, 0, 0, time.UTC)
+	got := daterange.NewResolver(hcm, func() time.Time { return utc }).Now()
+	assert.True(t, got.Equal(utc))
+	assert.Equal(t, hcm, got.Location())
 }

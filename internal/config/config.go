@@ -4,6 +4,8 @@ package config
 import (
 	"errors"
 	"fmt"
+	"net"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -23,8 +25,12 @@ type Config struct {
 	DBQueryTimeout  time.Duration
 	BusinessTZ      *time.Location
 	CORSOrigins     []string
+	TrustedProxies  []string
 	ShutdownTimeout time.Duration
 }
+
+// MaxDBConns caps DB_MAX_CONNS. It keeps the int32 conversion exact and is far above any sane pool size.
+const MaxDBConns = 1000
 
 // IsProduction reports whether the app runs with production settings.
 func (c Config) IsProduction() bool { return c.Env == "production" }
@@ -35,9 +41,10 @@ func Load() (Config, error) {
 	var errs []error
 
 	cfg := Config{
-		Env:         getString("APP_ENV", "development"),
-		DatabaseURL: os.Getenv("DATABASE_URL"),
-		CORSOrigins: getList("CORS_ALLOWED_ORIGINS"),
+		Env:            getString("APP_ENV", "development"),
+		DatabaseURL:    os.Getenv("DATABASE_URL"),
+		CORSOrigins:    getList("CORS_ALLOWED_ORIGINS"),
+		TrustedProxies: getList("TRUSTED_PROXIES"),
 	}
 	if cfg.Env != "development" && cfg.Env != "production" {
 		errs = append(errs, fmt.Errorf("APP_ENV must be development or production, got %q", cfg.Env))
@@ -57,10 +64,12 @@ func Load() (Config, error) {
 	errs = append(errs, err)
 	minConns, err := getInt("DB_MIN_CONNS", 2)
 	errs = append(errs, err)
-	if maxConns < 1 || minConns < 0 || minConns > maxConns {
-		errs = append(errs, fmt.Errorf("need 0 <= DB_MIN_CONNS (%d) <= DB_MAX_CONNS (%d) and DB_MAX_CONNS >= 1", minConns, maxConns))
+	if maxConns < 1 || maxConns > MaxDBConns || minConns < 0 || minConns > maxConns {
+		errs = append(errs, fmt.Errorf("need 0 <= DB_MIN_CONNS (%d) <= DB_MAX_CONNS (%d) and 1 <= DB_MAX_CONNS <= %d",
+			minConns, maxConns, MaxDBConns))
+	} else {
+		cfg.DBMaxConns, cfg.DBMinConns = int32(maxConns), int32(minConns) //nolint:gosec // bounds checked above
 	}
-	cfg.DBMaxConns, cfg.DBMinConns = int32(maxConns), int32(minConns) //nolint:gosec // bounds checked above
 
 	cfg.DBQueryTimeout, err = getDuration("DB_QUERY_TIMEOUT", 5*time.Second)
 	errs = append(errs, err)
@@ -76,10 +85,32 @@ func Load() (Config, error) {
 		errs = append(errs, fmt.Errorf("BUSINESS_TZ %q: %w", tzName, err))
 	}
 
+	for _, o := range cfg.CORSOrigins {
+		if err := validateOrigin(o); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	for _, p := range cfg.TrustedProxies {
+		if _, _, err := net.ParseCIDR(p); err != nil && net.ParseIP(p) == nil {
+			errs = append(errs, fmt.Errorf("TRUSTED_PROXIES: %q is not an IP address or CIDR", p))
+		}
+	}
+
 	if err := errors.Join(errs...); err != nil {
 		return Config{}, fmt.Errorf("load config: %w", err)
 	}
 	return cfg, nil
+}
+
+// validateOrigin accepts exactly what browsers send in the Origin header: scheme://host[:port].
+// The CORS middleware compares origins as plain strings, so anything else would silently never match.
+func validateOrigin(o string) error {
+	u, err := url.Parse(o)
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" ||
+		u.Path != "" || u.RawQuery != "" || u.Fragment != "" || u.User != nil {
+		return fmt.Errorf("CORS_ALLOWED_ORIGINS: %q must look like https://app.example.com (no wildcard, path or trailing slash)", o)
+	}
+	return nil
 }
 
 func getString(key, def string) string {

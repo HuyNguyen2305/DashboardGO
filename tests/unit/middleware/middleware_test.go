@@ -153,8 +153,13 @@ func TestCORS(t *testing.T) {
 
 			assert.Equal(t, tc.wantStatus, w.Code)
 			assert.Equal(t, tc.wantAllowHdr, w.Header().Get("Access-Control-Allow-Origin"))
+			assert.Contains(t, w.Header().Values("Vary"), "Origin", "every response varies by Origin, so caches keep copies apart")
+			if tc.preflight {
+				assert.Contains(t, w.Header().Values("Vary"), "Access-Control-Request-Method")
+			}
 			if tc.wantStatus == http.StatusNoContent {
 				assert.Contains(t, w.Header().Get("Access-Control-Allow-Headers"), middleware.RequestIDHeader)
+				assert.Equal(t, "GET, OPTIONS", w.Header().Get("Access-Control-Allow-Methods"))
 			}
 		})
 	}

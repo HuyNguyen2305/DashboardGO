@@ -3,9 +3,11 @@ package service_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
+	"github.com/shopspring/decimal"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
@@ -24,7 +26,7 @@ func TestRevenueByStaff(t *testing.T) {
 
 	repo := mocks.NewMockDashboardRepository(t)
 	repo.EXPECT().RevenueByStaff(mock.Anything, model.StatsQuery{
-		Start: r.Start, End: r.End, RevenueStatuses: []string{"sent", "partial", "partial_paid", "paid"},
+		Start: r.Start, End: r.End, RevenueStatuses: []string{"sent", "partial_paid", "paid"},
 	}).Return([]model.StaffRevenueRow{
 		{StaffID: ptr(int64(1)), Name: "Thọ", Count: 7, Amount: dec("955.00")},
 		{StaffID: nil, Count: 4, Amount: dec("444.20")},
@@ -38,7 +40,7 @@ func TestRevenueByStaff(t *testing.T) {
 	assert.True(t, w.TotalAmount.Equal(dec("1400.20")), w.TotalAmount.String())
 	require.Len(t, w.Rows, 3)
 	assert.Equal(t, "Thọ", w.Rows[0].Name)
-	assert.InDelta(t, 68.20, w.Rows[0].Percent, 0.001)
+	assert.InDelta(t, 68.21, w.Rows[0].Percent, 0.001) // 68.20 + 31.72 + 0.07 was 99.99
 	assert.Nil(t, w.Rows[1].StaffID)
 	assert.Equal(t, "Other", w.Rows[1].Name)
 	assert.InDelta(t, 31.72, w.Rows[1].Percent, 0.001)
@@ -49,11 +51,13 @@ func TestActiveServices(t *testing.T) {
 	r, err := resolver(t).Preset(daterange.ThisMonth)
 	require.NoError(t, err)
 
+	q := model.ServicesQuery{Start: r.Start, End: r.End, Statuses: []string{"incomplete"}}
 	repo := mocks.NewMockDashboardRepository(t)
-	repo.EXPECT().ActiveServices(mock.Anything, model.ServicesQuery{
-		Start: r.Start, End: r.End, Statuses: []string{"incomplete"},
-	}).Return([]model.ServiceRow{
-		{ServiceID: ptr(int64(1)), Name: "Blank Service", Count: 4, Amount: dec("594.24")},
+	expectSnapshot(repo)
+	repo.EXPECT().ActiveServiceCustomers(mock.Anything, q).
+		Return(model.ServiceCustomers{CustomerCount: 9, RecurringCustomerCount: 3}, nil).Once()
+	repo.EXPECT().ActiveServices(mock.Anything, q).Return([]model.ServiceRow{
+		{ServiceID: ptr(int64(1)), Name: "Blank Service", Count: 4, CustomerCount: 2, Amount: dec("594.24")},
 		{ServiceID: ptr(int64(2)), Name: "Initial Service", Count: 3, Amount: dec("285.00")},
 		{ServiceID: ptr(int64(3)), Name: "Bi-Monthly Service", IsRecurring: true, Count: 4, Amount: dec("260.00")},
 		{ServiceID: ptr(int64(4)), Name: "Every 21 Days", IsRecurring: true, Count: 2, Amount: dec("120.00")},
@@ -67,6 +71,8 @@ func TestActiveServices(t *testing.T) {
 	// Screenshot: 18 active, 6 recurring, $1,371.24, Blank Service 43.34%.
 	assert.Equal(t, int64(18), w.TotalCount)
 	assert.Equal(t, int64(6), w.RecurringCount)
+	assert.Equal(t, model.ServiceCustomers{CustomerCount: 9, RecurringCustomerCount: 3}, w.ServiceCustomers)
+	assert.Equal(t, int64(2), w.Rows[0].CustomerCount)
 	assert.True(t, w.TotalAmount.Equal(dec("1371.24")), w.TotalAmount.String())
 	assert.InDelta(t, 43.34, w.Rows[0].Percent, 0.001)
 	assert.InDelta(t, 20.78, w.Rows[1].Percent, 0.001)
@@ -78,8 +84,8 @@ func TestTags(t *testing.T) {
 	t.Run("percent is share of tag uses", func(t *testing.T) {
 		repo := mocks.NewMockDashboardRepository(t)
 		repo.EXPECT().TagUsage(mock.Anything, "location").Return([]model.TagRow{
-			{TagID: 1, Name: "1233", Count: 1},
-			{TagID: 2, Name: "a456", Count: 1},
+			{TagID: ptr(int64(1)), Name: "1233", Count: 1},
+			{TagID: ptr(int64(2)), Name: "a456", Count: 1},
 		}, nil).Once()
 
 		w, err := service.NewDashboardService(repo).Tags(context.Background(), "location")
@@ -155,7 +161,16 @@ func TestSecondaryWidgetErrorsAreWrapped(t *testing.T) {
 			return err
 		}},
 		{"active services", func(m *mocks.MockDashboardRepository) {
+			expectSnapshot(m)
 			m.EXPECT().ActiveServices(mock.Anything, mock.Anything).Return(nil, dbErr).Once()
+		}, func(s *service.DashboardService) error {
+			_, err := s.ActiveServices(context.Background(), r)
+			return err
+		}},
+		{"active service customers", func(m *mocks.MockDashboardRepository) {
+			expectSnapshot(m)
+			m.EXPECT().ActiveServices(mock.Anything, mock.Anything).Return(nil, nil).Once()
+			m.EXPECT().ActiveServiceCustomers(mock.Anything, mock.Anything).Return(model.ServiceCustomers{}, dbErr).Once()
 		}, func(s *service.DashboardService) error {
 			_, err := s.ActiveServices(context.Background(), r)
 			return err
@@ -180,4 +195,42 @@ func TestSecondaryWidgetErrorsAreWrapped(t *testing.T) {
 			assert.ErrorIs(t, tc.call(service.NewDashboardService(repo)), dbErr)
 		})
 	}
+}
+
+func TestTagsFoldTheTailIntoOtherTags(t *testing.T) {
+	// 52 tags: the 50 most used are listed, the last two become "Other tags".
+	rows := make([]model.TagRow, 52)
+	for i := range rows {
+		rows[i] = model.TagRow{TagID: ptr(int64(i + 1)), Name: fmt.Sprintf("tag-%02d", i+1), Count: int64(60 - i)}
+	}
+	repo := mocks.NewMockDashboardRepository(t)
+	repo.EXPECT().TagUsage(mock.Anything, "customer").Return(rows, nil).Once()
+
+	w, err := service.NewDashboardService(repo).Tags(context.Background(), "customer")
+	require.NoError(t, err)
+
+	require.Len(t, w.Rows, model.MaxTagRows+1)
+	other := w.Rows[model.MaxTagRows]
+	assert.Nil(t, other.TagID)
+	assert.Equal(t, service.OtherTagsLabel, other.Name)
+	assert.Equal(t, int64(10+9), other.Count, "tag-51 (10) + tag-52 (9)")
+	assert.Equal(t, "tag-50", w.Rows[model.MaxTagRows-1].Name)
+
+	var total int64
+	sum := decimal.Zero
+	for _, r := range w.Rows {
+		total += r.Count
+		sum = sum.Add(decimal.NewFromFloat(r.Percent))
+	}
+	assert.Equal(t, w.TotalCount, total, "no uses are lost")
+	assert.True(t, sum.Equal(decimal.NewFromInt(100)), "percents sum to %s", sum)
+}
+
+func TestTagsUnderTheCapHaveNoOtherRow(t *testing.T) {
+	repo := mocks.NewMockDashboardRepository(t)
+	repo.EXPECT().TagUsage(mock.Anything, "location").Return([]model.TagRow{{TagID: ptr(int64(1)), Name: "a", Count: 1}}, nil).Once()
+
+	w, err := service.NewDashboardService(repo).Tags(context.Background(), "location")
+	require.NoError(t, err)
+	assert.Len(t, w.Rows, 1)
 }

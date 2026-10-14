@@ -29,7 +29,7 @@ func dashboardRouter(t *testing.T, svc handler.DashboardService) *gin.Engine {
 	require.NoError(t, err)
 	now := time.Date(2026, time.October, 12, 10, 0, 0, 0, loc)
 
-	return handler.NewRouter(handler.RouterDeps{
+	return mustRouter(t, handler.RouterDeps{
 		Log:       slog.New(slog.NewTextHandler(io.Discard, nil)),
 		Health:    handler.NewHealthHandler(&fakePinger{}, time.Second),
 		Dashboard: handler.NewDashboardHandler(svc, daterange.NewResolver(loc, func() time.Time { return now })),
@@ -70,16 +70,18 @@ func TestStatsResponse(t *testing.T) {
 	}`, w.Body.String())
 }
 
-func TestStatsForwardsRequestedRange(t *testing.T) {
+func TestStatsForwardsRangeCappedAtNow(t *testing.T) {
+	// The router's clock is frozen at 2026-10-12 10:00 GMT+7.
 	svc := mocks.NewMockDashboardService(t)
 	svc.EXPECT().Stats(mock.Anything, mock.MatchedBy(func(r daterange.Range) bool {
-		return r.Preset == daterange.Custom &&
-			r.Start.Format("2006-01-02") == "2026-09-13" &&
-			r.LastDay().Format("2006-01-02") == "2026-10-12"
+		return r.Preset == daterange.ThisMonth &&
+			r.Start.Format(time.DateTime) == "2026-10-01 00:00:00" &&
+			r.End.Format(time.DateTime) == "2026-10-12 10:00:00"
 	})).Return(model.DashboardStats{}, nil).Once()
 
-	w := getStats(t, dashboardRouter(t, svc), "?from=2026-09-13&to=2026-10-12")
+	w := getStats(t, dashboardRouter(t, svc), "?range=this_month")
 	assert.Equal(t, http.StatusOK, w.Code, w.Body.String())
+	assert.Contains(t, w.Body.String(), `"end":"2026-10-31"`, "the response still echoes the whole period")
 }
 
 func TestStatsErrors(t *testing.T) {
