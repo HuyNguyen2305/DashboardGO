@@ -166,6 +166,19 @@ type YearSeries struct {
 	Total  decimal.Decimal
 }
 
+// ForecastMonth is one month of the Sales Forecast: booked jobs plus the unbooked recurring visits.
+type ForecastMonth struct {
+	Month             time.Time
+	Booked, Recurring decimal.Decimal
+}
+
+// ForecastSeries is the Sales Forecast chart plus the total of each series.
+type ForecastSeries struct {
+	Months         []ForecastMonth
+	BookedTotal    decimal.Decimal
+	RecurringTotal decimal.Decimal
+}
+
 // ActiveJobStatuses are the job statuses counted by the Active Services widget.
 var ActiveJobStatuses = []string{"incomplete"}
 

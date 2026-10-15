@@ -41,7 +41,7 @@ type TableCount struct {
 // tables lists every seeded table in foreign-key order.
 var tables = []string{
 	"staff", "services", "customers", "locations", "tags", "customer_tags",
-	"location_tags", "jobs", "documents", "document_items", "payments",
+	"location_tags", "recurring_plans", "jobs", "documents", "document_items", "payments",
 }
 
 // Seed loads a preset in one transaction. Without Reset it refuses a database that
@@ -153,13 +153,24 @@ func insertDataset(ctx context.Context, tx pgx.Tx, ds *Dataset) error {
 		{"location_tags", []string{"location_id", "tag_id"}, rowsOf(ds.LocationTags, func(lt LocationTag) []any {
 			return []any{lt.LocationID, lt.TagID}
 		})},
+		{"recurring_plans", []string{
+			"id", "customer_id", "location_id", "service_id", "staff_id", "status", "interval_unit",
+			"interval_count", "start_date", "end_date", "quantity", "unit_price", "tax_rate", "payment_terms_days",
+		}, rowsOf(ds.RecurringPlans, func(p RecurringPlan) []any {
+			return []any{
+				p.ID, p.CustomerID, p.LocationID, p.ServiceID, p.StaffID, p.Status, p.IntervalUnit,
+				p.IntervalCount, p.StartDate, p.EndDate, p.Quantity, p.UnitPrice, p.TaxRate, p.PaymentTermsDays,
+			}
+		})},
 		{"jobs", []string{
 			"id", "customer_id", "location_id", "service_id", "staff_id", "status",
 			"booked_online", "total", "scheduled_at", "completed_at", "created_at",
+			"recurring_plan_id", "occurrence_date",
 		}, rowsOf(ds.Jobs, func(j Job) []any {
 			return []any{
 				j.ID, j.CustomerID, j.LocationID, j.ServiceID, j.StaffID, j.Status,
 				j.BookedOnline, j.Total, j.ScheduledAt, j.CompletedAt, j.CreatedAt,
+				j.RecurringPlanID, j.OccurrenceDate,
 			}
 		})},
 		{"documents", []string{

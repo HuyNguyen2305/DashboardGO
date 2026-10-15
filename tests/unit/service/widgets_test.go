@@ -231,15 +231,6 @@ func TestYearSeriesWidgets(t *testing.T) {
 				return s.RevenuePerMonth(context.Background(), r)
 			},
 		},
-		{
-			"sales forecast",
-			func(m *mocks.MockDashboardRepository) {
-				m.EXPECT().MonthlyForecast(mock.Anything, wantQuery).Return(repoMonths, nil).Once()
-			},
-			func(s *service.DashboardService) (model.YearSeries, error) {
-				return s.SalesForecast(context.Background(), r)
-			},
-		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -325,6 +316,7 @@ func TestWidgetErrorsAreWrapped(t *testing.T) {
 			return err
 		}},
 		{"sales forecast", func(m *mocks.MockDashboardRepository) {
+			expectSnapshot(m)
 			m.EXPECT().MonthlyForecast(mock.Anything, mock.Anything).Return(nil, dbErr).Once()
 		}, func(s *service.DashboardService) error {
 			_, err := s.SalesForecast(context.Background(), r)

@@ -650,22 +650,22 @@ func (_c *MockDashboardService_RevenuePerMonth_Call) RunAndReturn(run func(ctx c
 }
 
 // SalesForecast provides a mock function for the type MockDashboardService
-func (_mock *MockDashboardService) SalesForecast(ctx context.Context, r daterange.Range) (model.YearSeries, error) {
+func (_mock *MockDashboardService) SalesForecast(ctx context.Context, r daterange.Range) (model.ForecastSeries, error) {
 	ret := _mock.Called(ctx, r)
 
 	if len(ret) == 0 {
 		panic("no return value specified for SalesForecast")
 	}
 
-	var r0 model.YearSeries
+	var r0 model.ForecastSeries
 	var r1 error
-	if returnFunc, ok := ret.Get(0).(func(context.Context, daterange.Range) (model.YearSeries, error)); ok {
+	if returnFunc, ok := ret.Get(0).(func(context.Context, daterange.Range) (model.ForecastSeries, error)); ok {
 		return returnFunc(ctx, r)
 	}
-	if returnFunc, ok := ret.Get(0).(func(context.Context, daterange.Range) model.YearSeries); ok {
+	if returnFunc, ok := ret.Get(0).(func(context.Context, daterange.Range) model.ForecastSeries); ok {
 		r0 = returnFunc(ctx, r)
 	} else {
-		r0 = ret.Get(0).(model.YearSeries)
+		r0 = ret.Get(0).(model.ForecastSeries)
 	}
 	if returnFunc, ok := ret.Get(1).(func(context.Context, daterange.Range) error); ok {
 		r1 = returnFunc(ctx, r)
@@ -705,12 +705,12 @@ func (_c *MockDashboardService_SalesForecast_Call) Run(run func(ctx context.Cont
 	return _c
 }
 
-func (_c *MockDashboardService_SalesForecast_Call) Return(yearSeries model.YearSeries, err error) *MockDashboardService_SalesForecast_Call {
-	_c.Call.Return(yearSeries, err)
+func (_c *MockDashboardService_SalesForecast_Call) Return(forecastSeries model.ForecastSeries, err error) *MockDashboardService_SalesForecast_Call {
+	_c.Call.Return(forecastSeries, err)
 	return _c
 }
 
-func (_c *MockDashboardService_SalesForecast_Call) RunAndReturn(run func(ctx context.Context, r daterange.Range) (model.YearSeries, error)) *MockDashboardService_SalesForecast_Call {
+func (_c *MockDashboardService_SalesForecast_Call) RunAndReturn(run func(ctx context.Context, r daterange.Range) (model.ForecastSeries, error)) *MockDashboardService_SalesForecast_Call {
 	_c.Call.Return(run)
 	return _c
 }

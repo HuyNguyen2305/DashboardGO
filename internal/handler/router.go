@@ -19,6 +19,8 @@ type RouterDeps struct {
 	TrustedProxies []string
 	Health         *HealthHandler
 	Dashboard      *DashboardHandler
+	// Recurring is optional; its routes are registered only when set.
+	Recurring *RecurringHandler
 }
 
 // NewRouter builds the Gin engine with shared middleware and all routes.
@@ -58,6 +60,10 @@ func NewRouter(d RouterDeps) (*gin.Engine, error) {
 	dashboard.GET("/tags", allowQuery("scope"), d.Dashboard.Tags)
 	dashboard.GET("/customers-by-source", yearOnly, d.Dashboard.CustomersBySource)
 
+	if d.Recurring != nil {
+		registerRecurringRoutes(r, d.Recurring)
+	}
+
 	return r, nil
 }
 
@@ -65,4 +71,22 @@ func jsonError(status int, msg string) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		c.JSON(status, dto.ErrorResponse{Error: msg, RequestID: middleware.GetRequestID(c)})
 	}
+}
+
+func registerRecurringRoutes(r *gin.Engine, h *RecurringHandler) {
+	plans := r.Group("/api/v1/recurring-plans")
+	// Every write needs a JSON Content-Type, so a cross-site simple request cannot reach it.
+	jsonOnly := requireJSON()
+	plans.POST("", jsonOnly, allowQuery(), h.Create)
+	plans.GET("", allowQuery("customer_id", "status", "limit", "after"), h.List)
+	plans.GET("/:id", allowQuery(), h.Get)
+	plans.PATCH("/:id", jsonOnly, allowQuery(), h.Update)
+	plans.POST("/:id/pause", jsonOnly, allowQuery(), h.Pause)
+	plans.POST("/:id/resume", jsonOnly, allowQuery(), h.Resume)
+	plans.POST("/:id/cancel", jsonOnly, allowQuery(), h.Cancel)
+	window := allowQuery("from", "to")
+	plans.GET("/:id/occurrences", window, h.Occurrences)
+	plans.GET("/:id/projected-invoices", window, h.ProjectedInvoices)
+	plans.GET("/:id/projected-estimate", window, h.ProjectedEstimate)
+	r.GET("/api/v1/customers/:id/recurring-occurrences", window, h.CustomerOccurrences)
 }

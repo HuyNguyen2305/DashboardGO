@@ -9,6 +9,9 @@ packages:
   dashboardgo/internal/service:
     interfaces:
       DashboardRepository: {}
+      RecurringForecaster: {}
+      RecurringRepository: {}
   dashboardgo/internal/handler:
     interfaces:
       DashboardService: {}
+      RecurringService: {}

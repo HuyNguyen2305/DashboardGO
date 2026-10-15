@@ -26,7 +26,7 @@ type DashboardService interface {
 	Estimates(ctx context.Context, r daterange.Range) (model.Breakdown, error)
 	InvoiceAging(ctx context.Context, asOf time.Time) (model.AgingWidget, error)
 	RevenuePerMonth(ctx context.Context, r daterange.Range) (model.YearSeries, error)
-	SalesForecast(ctx context.Context, r daterange.Range) (model.YearSeries, error)
+	SalesForecast(ctx context.Context, r daterange.Range) (model.ForecastSeries, error)
 	Payments(ctx context.Context, r daterange.Range) (model.Breakdown, error)
 	RevenueByStaff(ctx context.Context, r daterange.Range) (model.StaffRevenue, error)
 	ActiveServices(ctx context.Context, r daterange.Range) (model.ActiveServices, error)
@@ -148,7 +148,31 @@ func (h *DashboardHandler) RevenuePerMonth(c *gin.Context) {
 
 // SalesForecast serves GET /api/v1/dashboard/sales-forecast?year=2026.
 func (h *DashboardHandler) SalesForecast(c *gin.Context) {
-	h.yearSeries(c, h.svc.SalesForecast)
+	r, err := ParseYear(c, h.dates)
+	if err != nil {
+		WriteError(c, err)
+		return
+	}
+	s, err := h.svc.SalesForecast(c.Request.Context(), r)
+	if err != nil {
+		WriteError(c, err)
+		return
+	}
+
+	months := make([]dto.ForecastMonth, len(s.Months))
+	for i, m := range s.Months {
+		months[i] = dto.ForecastMonth{
+			Month:     m.Month.Format("2006-01"),
+			Amount:    dto.Money(m.Booked),
+			Recurring: dto.Money(m.Recurring),
+		}
+	}
+	c.JSON(http.StatusOK, dto.SalesForecastResponse{
+		Range:          NewDateRange(r),
+		Total:          dto.Money(s.BookedTotal),
+		RecurringTotal: dto.Money(s.RecurringTotal),
+		Months:         months,
+	})
 }
 
 func (h *DashboardHandler) yearSeries(c *gin.Context, load func(context.Context, daterange.Range) (model.YearSeries, error)) {

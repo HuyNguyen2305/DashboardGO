@@ -34,8 +34,9 @@ func CORS(allowedOrigins []string) gin.HandlerFunc {
 				c.AbortWithStatus(http.StatusForbidden)
 				return
 			}
-			// The API is read-only.
-			h.Set("Access-Control-Allow-Methods", "GET, OPTIONS")
+			// Reads plus the recurring plan writes (POST, PATCH). Writes need the Content-Type
+			// header, since the handlers only accept application/json bodies.
+			h.Set("Access-Control-Allow-Methods", "GET, POST, PATCH, OPTIONS")
 			h.Set("Access-Control-Allow-Headers", "Authorization, Content-Type, "+RequestIDHeader)
 			h.Set("Access-Control-Max-Age", "600")
 			c.AbortWithStatus(http.StatusNoContent)

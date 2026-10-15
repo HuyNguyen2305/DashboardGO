@@ -14,6 +14,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/shopspring/decimal"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -41,14 +42,14 @@ func TestMigrateRunner(t *testing.T) {
 	require.NoError(t, m.Up())
 	v, _, err = m.Version()
 	require.NoError(t, err)
-	assert.Equal(t, uint(6), v)
+	assert.Equal(t, uint(7), v)
 
 	assert.ErrorIs(t, m.Up(), migrate.ErrNoChange)
 
 	require.NoError(t, m.Down(1))
 	v, _, err = m.Version()
 	require.NoError(t, err)
-	assert.Equal(t, uint(5), v, "down without N reverts exactly one migration")
+	assert.Equal(t, uint(6), v, "down without N reverts exactly one migration")
 
 	require.Error(t, m.Down(0), "down 0 must be refused, never treated as 'all'")
 	require.NoError(t, m.Up())
@@ -89,7 +90,7 @@ func TestSeedIntoEmptiedDatabase(t *testing.T) {
 
 	// Empty every table with DELETE: the rows are gone but the ID counters stay past 1.
 	_, err = pool.Exec(ctx, `DELETE FROM payments; DELETE FROM document_items; DELETE FROM documents;
-		DELETE FROM jobs; DELETE FROM location_tags; DELETE FROM customer_tags; DELETE FROM tags;
+		DELETE FROM jobs; DELETE FROM recurring_plans; DELETE FROM location_tags; DELETE FROM customer_tags; DELETE FROM tags;
 		DELETE FROM locations; DELETE FROM customers; DELETE FROM services; DELETE FROM staff;`)
 	require.NoError(t, err)
 
@@ -99,7 +100,7 @@ func TestSeedIntoEmptiedDatabase(t *testing.T) {
 
 	t.Run("a leftover row in any table counts as data", func(t *testing.T) {
 		_, err := pool.Exec(ctx, `TRUNCATE staff, services, customers, locations, tags, customer_tags,
-			location_tags, jobs, documents, document_items, payments RESTART IDENTITY;
+			location_tags, recurring_plans, jobs, documents, document_items, payments RESTART IDENTITY;
 			INSERT INTO tags (name, scope) VALUES ('leftover', 'customer');`)
 		require.NoError(t, err)
 
@@ -137,11 +138,13 @@ func TestDemoSeedServesConsistentDashboard(t *testing.T) {
 	assert.Equal(t, int64(5), newID)
 
 	now := today.Add(10 * time.Hour)
-	svc := service.NewDashboardService(repository.NewDashboardRepository(pool, 5*time.Second))
+	dates := daterange.NewResolver(loc, func() time.Time { return now })
+	recurring := service.NewRecurringService(repository.NewRecurringRepository(pool, 5*time.Second, loc), dates)
+	svc := service.NewDashboardService(repository.NewDashboardRepository(pool, 5*time.Second)).WithRecurring(recurring)
 	router, err := handler.NewRouter(handler.RouterDeps{
 		Log:       slog.New(slog.NewTextHandler(io.Discard, nil)),
 		Health:    handler.NewHealthHandler(pool, time.Second),
-		Dashboard: handler.NewDashboardHandler(svc, daterange.NewResolver(loc, func() time.Time { return now })),
+		Dashboard: handler.NewDashboardHandler(svc, dates),
 	})
 	require.NoError(t, err)
 	srv := httptest.NewServer(router)
@@ -224,11 +227,16 @@ func TestDemoSeedServesConsistentDashboard(t *testing.T) {
 		assert.Equal(t, sumSQL(revenueSQL, now), stats.Revenue, "Revenue up to now")
 		assert.Equal(t, sumSQL(newJobsSQL, now), stats.TotalNewJobs, "Total New Jobs up to now")
 
-		var revenue, forecast dto.YearSeriesResponse
+		var revenue dto.YearSeriesResponse
+		var forecast dto.SalesForecastResponse
 		get("revenue-per-month", &revenue)
 		get("sales-forecast", &forecast)
 		assert.Equal(t, sumSQL(revenueSQL, november), revenue.Months[9].Amount, "October revenue, whole month")
 		assert.Equal(t, sumSQL(forecastSQL, november), forecast.Months[9].Amount, "October forecast: booked jobs, whole month")
+
+		recurringTotal, err := decimal.NewFromString(forecast.RecurringTotal)
+		require.NoError(t, err)
+		assert.True(t, recurringTotal.IsPositive(), "the seeded plans leave unbooked visits, got %s", forecast.RecurringTotal)
 	})
 
 	t.Run("remaining widgets respond", func(t *testing.T) {

@@ -7,6 +7,8 @@ import (
 	"time"
 
 	"github.com/shopspring/decimal"
+
+	"dashboardgo/internal/recurrence"
 )
 
 // Bounds for DemoOptions.Months.
@@ -27,17 +29,18 @@ type DemoOptions struct {
 
 // Dataset is a complete set of rows with IDs already assigned, ready to insert in field order.
 type Dataset struct {
-	Staff         []Staff
-	Services      []Service
-	Customers     []Customer
-	Locations     []Location
-	Tags          []Tag
-	CustomerTags  []CustomerTag
-	LocationTags  []LocationTag
-	Jobs          []Job
-	Documents     []Document
-	DocumentItems []DocumentItem
-	Payments      []Payment
+	Staff          []Staff
+	Services       []Service
+	Customers      []Customer
+	Locations      []Location
+	RecurringPlans []RecurringPlan
+	Tags           []Tag
+	CustomerTags   []CustomerTag
+	LocationTags   []LocationTag
+	Jobs           []Job
+	Documents      []Document
+	DocumentItems  []DocumentItem
+	Payments       []Payment
 }
 
 // Staff is a row of the staff table.
@@ -73,6 +76,24 @@ type Location struct {
 	City       string
 }
 
+// RecurringPlan is a row of the recurring_plans table. Dates are calendar dates (UTC midnight).
+type RecurringPlan struct {
+	ID               int64
+	CustomerID       int64
+	LocationID       *int64 // one of the customer's locations, or nil
+	ServiceID        int64
+	StaffID          *int64
+	Status           string
+	IntervalUnit     string
+	IntervalCount    int
+	StartDate        time.Time
+	EndDate          *time.Time
+	Quantity         decimal.Decimal
+	UnitPrice        decimal.Decimal
+	TaxRate          decimal.Decimal
+	PaymentTermsDays int
+}
+
 // Tag is a row of the tags table.
 type Tag struct {
 	ID    int64
@@ -99,6 +120,10 @@ type Job struct {
 	ScheduledAt  time.Time
 	CompletedAt  *time.Time
 	CreatedAt    time.Time
+
+	// The plan visit this job fulfils; both set together or both nil.
+	RecurringPlanID *int64
+	OccurrenceDate  *time.Time // calendar date (UTC midnight)
 }
 
 // Document is a row of the documents table (an invoice or an estimate).
@@ -206,6 +231,7 @@ type generator struct {
 	r           *rand.Rand
 	ds          Dataset
 	start       time.Time // first instant of the window (local midnight on the 1st)
+	today       time.Time // local midnight of the current day
 	now         time.Time // last instant data may be dated at: end of Today
 	horizon     time.Time // last instant future jobs may be scheduled at
 	invoiceSeq  int
@@ -224,6 +250,7 @@ func Demo(opts DemoOptions) (*Dataset, error) {
 		// Demo data only needs to be reproducible, not unpredictable.
 		r:       rand.New(rand.NewPCG(opts.Seed, opts.Seed^0x9e3779b97f4a7c15)), //nolint:gosec // G404: must be seeded so --seed reproduces the same demo data; not used for security
 		start:   time.Date(y, m-time.Month(opts.Months-1), 1, 0, 0, 0, 0, loc),
+		today:   opts.Today,
 		now:     time.Date(y, m, d+1, 0, 0, 0, 0, loc).Add(-time.Minute),
 		horizon: time.Date(y, m+1, d, 18, 0, 0, 0, loc),
 	}
@@ -232,6 +259,7 @@ func Demo(opts DemoOptions) (*Dataset, error) {
 	for month := g.start; month.Before(g.now); month = month.AddDate(0, 1, 0) {
 		g.customersFor(month)
 	}
+	g.recurringPlans()
 	return &g.ds, nil
 }
 
@@ -487,4 +515,109 @@ func minTime(a, b time.Time) time.Time {
 func calendarDate(t time.Time) time.Time {
 	y, m, d := t.Date()
 	return time.Date(y, m, d, 0, 0, 0, 0, time.UTC)
+}
+
+// demoPlan describes a recurring plan relative to today.
+type demoPlan struct {
+	unit  recurrence.Unit
+	count int
+	start func(today time.Time) time.Time
+}
+
+var demoPlans = []demoPlan{
+	{recurrence.Week, 1, func(today time.Time) time.Time { return today.AddDate(0, 0, -10*7) }},
+	{recurrence.Week, 2, func(today time.Time) time.Time { return today.AddDate(0, 0, -9*7) }},
+	{recurrence.Month, 1, lastThirtyFirst},
+}
+
+// lastThirtyFirst returns the 31st of the most recent 31-day month ending at least a month before
+// today's month, so a month-end plan has both clamped and unclamped past visits and future ones.
+func lastThirtyFirst(today time.Time) time.Time {
+	y, m, _ := today.Date()
+	for back := 1; ; back++ {
+		first := time.Date(y, m-time.Month(back), 1, 0, 0, 0, 0, today.Location())
+		if time.Date(first.Year(), first.Month()+1, 0, 0, 0, 0, 0, today.Location()).Day() == 31 {
+			return time.Date(first.Year(), first.Month(), 31, 0, 0, 0, 0, today.Location())
+		}
+	}
+}
+
+// recurringPlans adds a few active plans for existing customers and books about two thirds of
+// each plan's past visits as completed jobs. Visits from today on stay unbooked, so the
+// Sales Forecast shows them as projected recurring revenue.
+func (g *generator) recurringPlans() {
+	var recurring []Service
+	for _, s := range g.ds.Services {
+		if s.IsRecurring {
+			recurring = append(recurring, s)
+		}
+	}
+	if len(recurring) == 0 {
+		return
+	}
+	for i, dp := range demoPlans {
+		start := dp.start(g.today)
+		var eligible []Customer
+		for _, c := range g.ds.Customers {
+			if c.Status != "lead" && c.CreatedAt.Before(start) {
+				eligible = append(eligible, c)
+			}
+		}
+		if len(eligible) == 0 {
+			continue
+		}
+		c := eligible[g.r.IntN(len(eligible))]
+		svc := recurring[i%len(recurring)]
+		loc := g.ds.Locations[c.ID-1] // every customer gets exactly one location, created alongside it
+		staffID := g.ds.Staff[g.r.IntN(len(g.ds.Staff))].ID
+
+		plan := RecurringPlan{
+			ID:               int64(len(g.ds.RecurringPlans) + 1),
+			CustomerID:       c.ID,
+			LocationID:       &loc.ID,
+			ServiceID:        svc.ID,
+			StaffID:          &staffID,
+			Status:           "active",
+			IntervalUnit:     string(dp.unit),
+			IntervalCount:    dp.count,
+			StartDate:        calendarDate(start),
+			Quantity:         decimal.NewFromInt(1),
+			UnitPrice:        svc.Price,
+			TaxRate:          decimal.Zero,
+			PaymentTermsDays: 14,
+		}
+		g.ds.RecurringPlans = append(g.ds.RecurringPlans, plan)
+		g.planJobs(plan, c, dp, start)
+	}
+}
+
+// planJobs books roughly two thirds of the plan's visits before today as completed jobs.
+func (g *generator) planJobs(plan RecurringPlan, c Customer, dp demoPlan, start time.Time) {
+	rule := recurrence.Rule{Unit: dp.unit, Count: dp.count, Start: start}
+	for k := 0; ; k++ {
+		day := rule.At(k)
+		if !day.Before(g.today) {
+			return
+		}
+		if g.r.IntN(3) == 0 {
+			continue
+		}
+		scheduled := time.Date(day.Year(), day.Month(), day.Day(), 8+g.r.IntN(10), g.r.IntN(60), 0, 0, day.Location())
+		done := minTime(scheduled.Add(time.Duration(1+g.r.IntN(3))*time.Hour), g.now)
+		occurrence := calendarDate(day)
+		g.ds.Jobs = append(g.ds.Jobs, Job{
+			ID:              int64(len(g.ds.Jobs) + 1),
+			CustomerID:      c.ID,
+			LocationID:      *plan.LocationID,
+			ServiceID:       &plan.ServiceID,
+			StaffID:         plan.StaffID,
+			Status:          "completed",
+			Total:           plan.UnitPrice.Mul(plan.Quantity),
+			ScheduledAt:     scheduled,
+			CompletedAt:     &done,
+			CreatedAt:       c.CreatedAt,
+			RecurringPlanID: &plan.ID,
+			OccurrenceDate:  &occurrence,
+		})
+	}
 }

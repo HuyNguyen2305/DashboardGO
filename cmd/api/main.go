@@ -62,7 +62,8 @@ func run() error {
 	defer pool.Close()
 
 	dates := daterange.NewResolver(cfg.BusinessTZ, time.Now)
-	dashboardSvc := service.NewDashboardService(repository.NewDashboardRepository(pool, cfg.DBQueryTimeout))
+	recurringSvc := service.NewRecurringService(repository.NewRecurringRepository(pool, cfg.DBQueryTimeout, cfg.BusinessTZ), dates)
+	dashboardSvc := service.NewDashboardService(repository.NewDashboardRepository(pool, cfg.DBQueryTimeout)).WithRecurring(recurringSvc)
 
 	router, err := handler.NewRouter(handler.RouterDeps{
 		Log:            log,
@@ -70,6 +71,7 @@ func run() error {
 		TrustedProxies: cfg.TrustedProxies,
 		Health:         handler.NewHealthHandler(pool, 2*time.Second),
 		Dashboard:      handler.NewDashboardHandler(dashboardSvc, dates),
+		Recurring:      handler.NewRecurringHandler(recurringSvc, dates),
 	})
 	if err != nil {
 		return err

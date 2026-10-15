@@ -198,9 +198,6 @@ func TestYearSeriesEndpoints(t *testing.T) {
 		{"/api/v1/dashboard/revenue-per-month", func(m *mocks.MockDashboardService) {
 			m.EXPECT().RevenuePerMonth(mock.Anything, isYear(2025)).Return(series, nil).Once()
 		}},
-		{"/api/v1/dashboard/sales-forecast", func(m *mocks.MockDashboardService) {
-			m.EXPECT().SalesForecast(mock.Anything, isYear(2025)).Return(series, nil).Once()
-		}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.path, func(t *testing.T) {
@@ -241,7 +238,7 @@ func TestWidgetServiceErrorsAreHidden(t *testing.T) {
 			m.EXPECT().InvoiceAging(mock.Anything, mock.Anything).Return(model.AgingWidget{}, boom).Once()
 		}},
 		{"/api/v1/dashboard/sales-forecast", func(m *mocks.MockDashboardService) {
-			m.EXPECT().SalesForecast(mock.Anything, mock.Anything).Return(model.YearSeries{}, boom).Once()
+			m.EXPECT().SalesForecast(mock.Anything, mock.Anything).Return(model.ForecastSeries{}, boom).Once()
 		}},
 	}
 	for _, tc := range cases {
@@ -253,4 +250,28 @@ func TestWidgetServiceErrorsAreHidden(t *testing.T) {
 			assert.NotContains(t, body, "statement timeout")
 		})
 	}
+}
+
+func TestSalesForecastEndpointAddsRecurringSeries(t *testing.T) {
+	svc := mocks.NewMockDashboardService(t)
+	svc.EXPECT().SalesForecast(mock.Anything, mock.Anything).Return(model.ForecastSeries{
+		Months: []model.ForecastMonth{
+			{Month: time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC), Booked: decimal.Zero, Recurring: decimal.Zero},
+			{Month: time.Date(2025, 2, 1, 0, 0, 0, 0, time.UTC), Booked: decimal.RequireFromString("12.5"), Recurring: decimal.RequireFromString("40")},
+		},
+		BookedTotal:    decimal.RequireFromString("12.5"),
+		RecurringTotal: decimal.RequireFromString("40"),
+	}, nil).Once()
+
+	code, body := call(t, svc, "/api/v1/dashboard/sales-forecast?year=2025")
+	require.Equal(t, http.StatusOK, code, body)
+	assert.JSONEq(t, `{
+		"range": {"preset": "year", "start": "2025-01-01", "end": "2025-12-31"},
+		"total": "12.50",
+		"recurring_total": "40.00",
+		"months": [
+			{"month": "2025-01", "amount": "0.00", "recurring": "0.00"},
+			{"month": "2025-02", "amount": "12.50", "recurring": "40.00"}
+		]
+	}`, body)
 }

@@ -60,11 +60,26 @@ type MonthlyAmount struct {
 	Amount string `json:"amount"`
 }
 
-// YearSeriesResponse serves the Revenue per Month and Sales Forecast widgets.
+// YearSeriesResponse serves the Revenue per Month widget.
 type YearSeriesResponse struct {
 	Range  DateRange       `json:"range"`
 	Total  string          `json:"total"`
 	Months []MonthlyAmount `json:"months"`
+}
+
+// ForecastMonth is one point of the Sales Forecast; Month is YYYY-MM. Amount is booked jobs.
+type ForecastMonth struct {
+	Month     string `json:"month"`
+	Amount    string `json:"amount"`
+	Recurring string `json:"recurring"`
+}
+
+// SalesForecastResponse serves the Sales Forecast widget: booked jobs plus the recurring series.
+type SalesForecastResponse struct {
+	Range          DateRange       `json:"range"`
+	Total          string          `json:"total"`
+	RecurringTotal string          `json:"recurring_total"`
+	Months         []ForecastMonth `json:"months"`
 }
 
 // StaffRevenueRow is one line of Revenue by Staff. A null StaffID is the "Other" row.

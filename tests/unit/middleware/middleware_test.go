@@ -159,8 +159,30 @@ func TestCORS(t *testing.T) {
 			}
 			if tc.wantStatus == http.StatusNoContent {
 				assert.Contains(t, w.Header().Get("Access-Control-Allow-Headers"), middleware.RequestIDHeader)
-				assert.Equal(t, "GET, OPTIONS", w.Header().Get("Access-Control-Allow-Methods"))
+				assert.Equal(t, "GET, POST, PATCH, OPTIONS", w.Header().Get("Access-Control-Allow-Methods"))
 			}
+		})
+	}
+}
+
+func TestCORSPreflightAllowsWrites(t *testing.T) {
+	const allowed = "http://app.test"
+	for _, method := range []string{http.MethodPost, http.MethodPatch} {
+		t.Run(method, func(t *testing.T) {
+			r := gin.New()
+			r.Use(middleware.CORS([]string{allowed}))
+
+			req := httptest.NewRequestWithContext(t.Context(), http.MethodOptions, "/api/v1/recurring-plans/3", http.NoBody)
+			req.Header.Set("Origin", allowed)
+			req.Header.Set("Access-Control-Request-Method", method)
+			req.Header.Set("Access-Control-Request-Headers", "content-type")
+			w := serve(r, req)
+
+			require.Equal(t, http.StatusNoContent, w.Code)
+			assert.Equal(t, allowed, w.Header().Get("Access-Control-Allow-Origin"))
+			methods := strings.Split(w.Header().Get("Access-Control-Allow-Methods"), ", ")
+			assert.ElementsMatch(t, []string{"GET", "POST", "PATCH", "OPTIONS"}, methods)
+			assert.Contains(t, w.Header().Get("Access-Control-Allow-Headers"), "Content-Type")
 		})
 	}
 }

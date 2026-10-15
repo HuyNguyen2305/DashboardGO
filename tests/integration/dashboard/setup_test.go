@@ -14,6 +14,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/shopspring/decimal"
 	"github.com/stretchr/testify/require"
 
 	"dashboardgo/internal/database"
@@ -52,7 +53,8 @@ func newEnv(t *testing.T) testEnv {
 func (e testEnv) at(t *testing.T, now time.Time) testEnv {
 	t.Helper()
 	dates := daterange.NewResolver(businessTZ(t), func() time.Time { return now })
-	svc := service.NewDashboardService(repository.NewDashboardRepository(e.pool, 5*time.Second))
+	recurring := service.NewRecurringService(repository.NewRecurringRepository(e.pool, 5*time.Second, businessTZ(t)), dates)
+	svc := service.NewDashboardService(repository.NewDashboardRepository(e.pool, 5*time.Second)).WithRecurring(recurring)
 	router, err := handler.NewRouter(handler.RouterDeps{
 		Log:       slog.New(slog.NewTextHandler(io.Discard, nil)),
 		Health:    handler.NewHealthHandler(e.pool, time.Second),
@@ -111,4 +113,14 @@ func (e testEnv) staffID(t *testing.T, name string) int64 {
 	var id int64
 	require.NoError(t, e.pool.QueryRow(context.Background(), `SELECT id FROM staff WHERE name = $1`, name).Scan(&id))
 	return id
+}
+
+// addMoney returns a + b for two dollar strings, formatted with two decimals.
+func addMoney(t *testing.T, a, b string) string {
+	t.Helper()
+	x, err := decimal.NewFromString(a)
+	require.NoError(t, err)
+	y, err := decimal.NewFromString(b)
+	require.NoError(t, err)
+	return x.Add(y).StringFixed(2)
 }

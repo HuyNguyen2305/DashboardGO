@@ -40,14 +40,26 @@ const (
 	OtherTagsLabel  = "Other tags"
 )
 
+// RecurringForecaster projects the unbooked visits of recurring plans for the Sales Forecast.
+type RecurringForecaster interface {
+	MonthlyRecurring(ctx context.Context, w model.Window) ([]model.MonthlyAmount, error)
+}
+
 // DashboardService computes dashboard widgets.
 type DashboardService struct {
-	repo DashboardRepository
+	repo      DashboardRepository
+	recurring RecurringForecaster
 }
 
 // NewDashboardService builds a DashboardService on top of repo.
 func NewDashboardService(repo DashboardRepository) *DashboardService {
 	return &DashboardService{repo: repo}
+}
+
+// WithRecurring adds the recurring series to the Sales Forecast; without it that series is zero.
+func (s *DashboardService) WithRecurring(f RecurringForecaster) *DashboardService {
+	s.recurring = f
+	return s
 }
 
 // Stats returns the top Stats row for r, applying the status rules from the model package.
@@ -131,13 +143,36 @@ func (s *DashboardService) RevenuePerMonth(ctx context.Context, r daterange.Rang
 }
 
 // SalesForecast returns, for every month in r (normally one year), the total of jobs scheduled in it
-// that are still on the books. Past months show what was booked, future months the work ahead.
-func (s *DashboardService) SalesForecast(ctx context.Context, r daterange.Range) (model.YearSeries, error) {
-	months, err := s.repo.MonthlyForecast(ctx, s.monthlyQuery(r))
+// that are still on the books, plus the recurring visits not yet booked as jobs. Past months show what
+// was booked, future months the work ahead. Both series read one snapshot, so a visit booked in
+// between is never counted twice or missed.
+func (s *DashboardService) SalesForecast(ctx context.Context, r daterange.Range) (model.ForecastSeries, error) {
+	var booked, recurring []model.MonthlyAmount
+	err := s.repo.WithTx(ctx, model.TxOptions{ReadOnly: true, Snapshot: true}, func(ctx context.Context) error {
+		var err error
+		if booked, err = s.repo.MonthlyForecast(ctx, s.monthlyQuery(r)); err != nil {
+			return err
+		}
+		if s.recurring == nil {
+			return nil
+		}
+		recurring, err = s.recurring.MonthlyRecurring(ctx, model.Window{From: r.Start, To: r.End})
+		return err
+	})
 	if err != nil {
-		return model.YearSeries{}, fmt.Errorf("sales forecast widget: %w", err)
+		return model.ForecastSeries{}, fmt.Errorf("sales forecast widget: %w", err)
 	}
-	return fillMonths(r, months), nil
+
+	b, rec := fillMonths(r, booked), fillMonths(r, recurring)
+	series := model.ForecastSeries{
+		Months:         make([]model.ForecastMonth, len(b.Months)),
+		BookedTotal:    b.Total,
+		RecurringTotal: rec.Total,
+	}
+	for i, m := range b.Months {
+		series.Months[i] = model.ForecastMonth{Month: m.Month, Booked: m.Amount, Recurring: rec.Months[i].Amount}
+	}
+	return series, nil
 }
 
 func (s *DashboardService) monthlyQuery(r daterange.Range) model.MonthlyQuery {

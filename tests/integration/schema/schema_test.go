@@ -18,6 +18,7 @@ import (
 const (
 	pgCheckViolation      = "23514"
 	pgForeignKeyViolation = "23503"
+	pgUniqueViolation     = "23505"
 )
 
 func TestMigrationsUpDownUp(t *testing.T) {
@@ -285,4 +286,132 @@ func TestSchemaConstraints(t *testing.T) {
 		   VALUES ('estimate', 'draft', 'EST-9', $1, 10, 5) RETURNING amount_paid::text`, s.customerID).Scan(&estimatePaid))
 		require.Equal(t, "0.00", estimatePaid, "estimates never have payments")
 	})
+}
+
+func TestRecurringPlanConstraints(t *testing.T) {
+	dsn := testdb.StartMigrated(t)
+
+	ctx := context.Background()
+	pool, err := pgxpool.New(ctx, dsn)
+	require.NoError(t, err)
+	t.Cleanup(pool.Close)
+
+	const insertPlan = `INSERT INTO recurring_plans
+		(customer_id, location_id, service_id, interval_unit, interval_count, start_date, end_date, unit_price, tax_rate)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, 50.00, $8)`
+
+	cases := []struct {
+		name string
+		// run executes statements inside the transaction; its last statement is the one under test.
+		run      func(t *testing.T, tx pgx.Tx, s seed, planID, serviceID, otherLocationID int64) error
+		wantCode string // empty means the statements must succeed
+	}{
+		{
+			name: "location of another customer is rejected",
+			run: func(t *testing.T, tx pgx.Tx, s seed, _, serviceID, otherLocationID int64) error {
+				_, err := tx.Exec(ctx, insertPlan, s.customerID, otherLocationID, serviceID, "week", 1, "2026-01-01", nil, 0)
+				return err
+			},
+			wantCode: pgForeignKeyViolation,
+		},
+		{
+			name: "interval_count of zero is rejected",
+			run: func(t *testing.T, tx pgx.Tx, s seed, _, serviceID, _ int64) error {
+				_, err := tx.Exec(ctx, insertPlan, s.customerID, s.locationID, serviceID, "week", 0, "2026-01-01", nil, 0)
+				return err
+			},
+			wantCode: pgCheckViolation,
+		},
+		{
+			name: "end_date before start_date is rejected",
+			run: func(t *testing.T, tx pgx.Tx, s seed, _, serviceID, _ int64) error {
+				_, err := tx.Exec(ctx, insertPlan, s.customerID, s.locationID, serviceID, "week", 1, "2026-01-02", "2026-01-01", 0)
+				return err
+			},
+			wantCode: pgCheckViolation,
+		},
+		{
+			name: "tax_rate above 1 is rejected",
+			run: func(t *testing.T, tx pgx.Tx, s seed, _, serviceID, _ int64) error {
+				_, err := tx.Exec(ctx, insertPlan, s.customerID, s.locationID, serviceID, "week", 1, "2026-01-01", nil, 1.5)
+				return err
+			},
+			wantCode: pgCheckViolation,
+		},
+		{
+			name: "interval_unit year is rejected",
+			run: func(t *testing.T, tx pgx.Tx, s seed, _, serviceID, _ int64) error {
+				_, err := tx.Exec(ctx, insertPlan, s.customerID, s.locationID, serviceID, "year", 1, "2026-01-01", nil, 0)
+				return err
+			},
+			wantCode: pgCheckViolation,
+		},
+		{
+			name: "job linked to a plan without occurrence_date is rejected",
+			run: func(t *testing.T, tx pgx.Tx, s seed, planID, _, _ int64) error {
+				_, err := tx.Exec(ctx, `INSERT INTO jobs (customer_id, scheduled_at, recurring_plan_id)
+				                        VALUES ($1, now(), $2)`, s.customerID, planID)
+				return err
+			},
+			wantCode: pgCheckViolation,
+		},
+		{
+			name: "occurrence_date without a plan is rejected",
+			run: func(t *testing.T, tx pgx.Tx, s seed, _, _, _ int64) error {
+				_, err := tx.Exec(ctx, `INSERT INTO jobs (customer_id, scheduled_at, occurrence_date)
+				                        VALUES ($1, now(), '2026-01-01')`, s.customerID)
+				return err
+			},
+			wantCode: pgCheckViolation,
+		},
+		{
+			name: "two jobs for the same plan visit are rejected",
+			run: func(t *testing.T, tx pgx.Tx, s seed, planID, _, _ int64) error {
+				const insertJob = `INSERT INTO jobs (customer_id, scheduled_at, recurring_plan_id, occurrence_date)
+				                   VALUES ($1, now(), $2, '2026-01-01')`
+				_, err := tx.Exec(ctx, insertJob, s.customerID, planID)
+				require.NoError(t, err)
+				_, err = tx.Exec(ctx, insertJob, s.customerID, planID)
+				return err
+			},
+			wantCode: pgUniqueViolation,
+		},
+		{
+			name: "valid plan with a linked job is accepted",
+			run: func(t *testing.T, tx pgx.Tx, s seed, planID, _, _ int64) error {
+				_, err := tx.Exec(ctx, `INSERT INTO jobs (customer_id, scheduled_at, recurring_plan_id, occurrence_date)
+				                        VALUES ($1, now(), $2, '2026-01-01')`, s.customerID, planID)
+				return err
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			// Each case runs in its own rolled-back transaction so cases stay independent.
+			tx, err := pool.Begin(ctx)
+			require.NoError(t, err)
+			defer func() { _ = tx.Rollback(ctx) }()
+
+			s := seedData(t, ctx, tx)
+			var serviceID, otherCustomerID, otherLocationID, planID int64
+			require.NoError(t, tx.QueryRow(ctx, `INSERT INTO services (name, price) VALUES ('Mowing', 50) RETURNING id`).Scan(&serviceID))
+			require.NoError(t, tx.QueryRow(ctx, `INSERT INTO customers (name) VALUES ('Other') RETURNING id`).Scan(&otherCustomerID))
+			require.NoError(t, tx.QueryRow(ctx, `INSERT INTO locations (customer_id, address) VALUES ($1, '2 Side St') RETURNING id`,
+				otherCustomerID).Scan(&otherLocationID))
+			require.NoError(t, tx.QueryRow(ctx, insertPlan+` RETURNING id`,
+				s.customerID, s.locationID, serviceID, "week", 2, "2026-01-01", nil, 0.0825).Scan(&planID),
+				"a valid plan must insert")
+
+			err = tc.run(t, tx, s, planID, serviceID, otherLocationID)
+
+			if tc.wantCode == "" {
+				require.NoError(t, err)
+				return
+			}
+			var pgErr *pgconn.PgError
+			require.True(t, errors.As(err, &pgErr), "expected a Postgres error, got %v", err)
+			require.Equal(t, tc.wantCode, pgErr.Code, pgErr.Message)
+		})
+	}
 }

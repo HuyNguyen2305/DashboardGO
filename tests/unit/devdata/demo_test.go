@@ -10,6 +10,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"dashboardgo/internal/devdata"
+	"dashboardgo/internal/recurrence"
 )
 
 func today(t *testing.T) time.Time {
@@ -192,4 +193,105 @@ func TestDemoNeverCompletesJobsInTheFuture(t *testing.T) {
 			assert.True(t, j.CompletedAt.Before(end), "seed %d job %d completed at %s, after the end of today", seed, j.ID, j.CompletedAt)
 		}
 	}
+}
+
+// planRule rebuilds the recurrence rule of a demo plan in the business timezone.
+func planRule(p devdata.RecurringPlan, loc *time.Location) recurrence.Rule {
+	y, m, d := p.StartDate.Date()
+	r := recurrence.Rule{
+		Unit:  recurrence.Unit(p.IntervalUnit),
+		Count: p.IntervalCount,
+		Start: time.Date(y, m, d, 0, 0, 0, 0, loc),
+	}
+	if p.EndDate != nil {
+		y, m, d := p.EndDate.Date()
+		end := time.Date(y, m, d, 0, 0, 0, 0, loc)
+		r.End = &end
+	}
+	return r
+}
+
+func TestDemoRecurringPlans(t *testing.T) {
+	ds := demo(t, 12, 42)
+	loc := today(t).Location()
+	todayY, todayM, todayD := today(t).Date()
+
+	require.GreaterOrEqual(t, len(ds.RecurringPlans), 3)
+
+	customerLocations := make(map[int64]int64, len(ds.Locations))
+	for _, l := range ds.Locations {
+		customerLocations[l.ID] = l.CustomerID
+	}
+	services := make(map[int64]devdata.Service, len(ds.Services))
+	for _, s := range ds.Services {
+		services[s.ID] = s
+	}
+
+	type cadence struct {
+		unit  string
+		count int
+		day   int
+	}
+	var got []cadence
+	plans := make(map[int64]devdata.RecurringPlan, len(ds.RecurringPlans))
+	for _, p := range ds.RecurringPlans {
+		plans[p.ID] = p
+		rule := planRule(p, loc)
+		require.NoError(t, rule.Validate(), "plan %d", p.ID)
+		assert.Equal(t, "active", p.Status)
+		assert.True(t, p.UnitPrice.Equal(services[p.ServiceID].Price), "plan %d unit price comes from the service", p.ID)
+		if p.LocationID != nil {
+			assert.Equal(t, p.CustomerID, customerLocations[*p.LocationID], "plan %d location belongs to its customer", p.ID)
+		}
+		assert.True(t, rule.At(0).Before(today(t)), "plan %d starts in the past", p.ID)
+		got = append(got, cadence{p.IntervalUnit, p.IntervalCount, p.StartDate.Day()})
+	}
+	assert.True(t, slices.ContainsFunc(got, func(c cadence) bool { return c.unit == "week" && c.count == 1 }))
+	assert.True(t, slices.ContainsFunc(got, func(c cadence) bool { return c.unit == "week" && c.count == 2 }))
+	assert.True(t, slices.ContainsFunc(got, func(c cadence) bool { return c.unit == "month" && c.count == 1 && c.day == 31 }))
+
+	type visit struct {
+		plan int64
+		date string
+	}
+	seen := make(map[visit]bool)
+	linkedPerPlan := make(map[int64]int)
+	for _, j := range ds.Jobs {
+		if j.RecurringPlanID == nil {
+			assert.Nil(t, j.OccurrenceDate, "job %d", j.ID)
+			continue
+		}
+		require.NotNil(t, j.OccurrenceDate, "job %d", j.ID)
+		p, ok := plans[*j.RecurringPlanID]
+		require.True(t, ok, "job %d references a missing plan", j.ID)
+		rule := planRule(p, loc)
+
+		y, m, d := j.OccurrenceDate.Date()
+		occ := time.Date(y, m, d, 0, 0, 0, 0, loc)
+		matches := rule.Between(occ, occ.AddDate(0, 0, 1))
+		require.Len(t, matches, 1, "job %d: occurrence %s is not a visit of plan %d", j.ID, occ.Format(time.DateOnly), p.ID)
+		assert.True(t, rule.At(matches[0].Index).Equal(occ))
+
+		assert.True(t, occ.Before(today(t)), "only past visits are booked")
+		assert.Equal(t, occ.Format(time.DateOnly), j.ScheduledAt.In(loc).Format(time.DateOnly))
+		assert.Equal(t, "completed", j.Status)
+		assert.NotNil(t, j.CompletedAt)
+		assert.Equal(t, p.CustomerID, j.CustomerID)
+
+		key := visit{p.ID, occ.Format(time.DateOnly)}
+		assert.False(t, seen[key], "two jobs for plan %d on %s", p.ID, key.date)
+		seen[key] = true
+		linkedPerPlan[p.ID]++
+	}
+	for _, p := range ds.RecurringPlans {
+		assert.Positive(t, linkedPerPlan[p.ID], "plan %d has booked past visits", p.ID)
+		// All visits from today on stay unbooked, so the forecast has a recurring series.
+		rule := planRule(p, loc)
+		future := rule.Between(time.Date(todayY, todayM, todayD, 0, 0, 0, 0, loc), time.Date(todayY+1, 1, 1, 0, 0, 0, 0, loc))
+		assert.NotEmpty(t, future, "plan %d has future visits", p.ID)
+	}
+}
+
+func TestDemoRecurringPlansAreReproducible(t *testing.T) {
+	assert.Equal(t, demo(t, 12, 5).RecurringPlans, demo(t, 12, 5).RecurringPlans)
 }

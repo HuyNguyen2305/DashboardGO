@@ -3,7 +3,6 @@ package repository
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"time"
 
@@ -31,48 +30,16 @@ func NewDashboardRepository(conn Conn, timeout time.Duration) *DashboardReposito
 	return &DashboardRepository{conn: conn, q: db.New(conn), timeout: timeout}
 }
 
-// txKey carries the open transaction in the context passed to WithTx's fn.
-type txKey struct{}
-
 // WithTx runs fn in one transaction: every repository call made with the ctx given to fn
 // uses it. It commits when fn returns nil and rolls back otherwise. A nested call joins the
 // transaction already open.
 func (r *DashboardRepository) WithTx(ctx context.Context, opts model.TxOptions, fn func(ctx context.Context) error) error {
-	if _, ok := ctx.Value(txKey{}).(pgx.Tx); ok {
-		return fn(ctx)
-	}
-
-	pgOpts := pgx.TxOptions{}
-	if opts.ReadOnly {
-		pgOpts.AccessMode = pgx.ReadOnly
-	}
-	if opts.Snapshot {
-		pgOpts.IsoLevel = pgx.RepeatableRead
-	}
-	tx, err := r.conn.BeginTx(ctx, pgOpts)
-	if err != nil {
-		return fmt.Errorf("begin transaction: %w", err)
-	}
-
-	if err := fn(context.WithValue(ctx, txKey{}, tx)); err != nil {
-		// Roll back even if ctx was canceled, so the connection goes back to the pool clean.
-		if rbErr := tx.Rollback(context.WithoutCancel(ctx)); rbErr != nil && !errors.Is(rbErr, pgx.ErrTxClosed) {
-			return errors.Join(err, fmt.Errorf("rollback: %w", rbErr))
-		}
-		return err
-	}
-	if err := tx.Commit(ctx); err != nil {
-		return fmt.Errorf("commit transaction: %w", err)
-	}
-	return nil
+	return withTx(ctx, r.conn, opts, fn)
 }
 
 // queries returns the queries bound to the transaction in ctx, if any.
 func (r *DashboardRepository) queries(ctx context.Context) *db.Queries {
-	if tx, ok := ctx.Value(txKey{}).(pgx.Tx); ok {
-		return r.q.WithTx(tx)
-	}
-	return r.q
+	return queriesFor(ctx, r.q)
 }
 
 // Stats returns the top Stats row in a single query.

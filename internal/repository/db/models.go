@@ -56,17 +56,19 @@ type DocumentItem struct {
 }
 
 type Job struct {
-	ID           int64
-	CustomerID   int64
-	LocationID   *int64
-	ServiceID    *int64
-	StaffID      *int64
-	Status       string
-	BookedOnline bool
-	Total        decimal.Decimal
-	ScheduledAt  time.Time
-	CompletedAt  pgtype.Timestamptz
-	CreatedAt    time.Time
+	ID              int64
+	CustomerID      int64
+	LocationID      *int64
+	ServiceID       *int64
+	StaffID         *int64
+	Status          string
+	BookedOnline    bool
+	Total           decimal.Decimal
+	ScheduledAt     time.Time
+	CompletedAt     pgtype.Timestamptz
+	CreatedAt       time.Time
+	RecurringPlanID *int64
+	OccurrenceDate  *time.Time
 }
 
 type Location struct {
@@ -92,6 +94,25 @@ type Payment struct {
 	Method     string
 	Amount     decimal.Decimal
 	ReceivedAt time.Time
+}
+
+type RecurringPlan struct {
+	ID               int64
+	CustomerID       int64
+	LocationID       *int64
+	ServiceID        int64
+	StaffID          *int64
+	Status           string
+	IntervalUnit     string
+	IntervalCount    int32
+	StartDate        time.Time
+	EndDate          *time.Time
+	Quantity         decimal.Decimal
+	UnitPrice        decimal.Decimal
+	TaxRate          decimal.Decimal
+	PaymentTermsDays int32
+	CreatedAt        time.Time
+	UpdatedAt        time.Time
 }
 
 type Service struct {
