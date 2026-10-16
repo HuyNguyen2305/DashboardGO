@@ -64,6 +64,19 @@ func TestAPIProjections(t *testing.T) {
 	assert.Equal(t, "100.00", est["total"])
 	assert.Equal(t, "projected", est["kind"])
 
+	// a window starting before today echoes the period actually priced, from today (Oct 15)
+	code, est = call(t, srv, http.MethodGet, base+"/projected-estimate?from=2026-10-01&to=2026-10-31", nil)
+	require.Equal(t, http.StatusOK, code, est)
+	assert.Equal(t, map[string]any{"preset": "custom", "start": "2026-10-15", "end": "2026-10-31"}, est["range"])
+	assert.InDelta(t, 2, est["visit_count"], 0, "Oct 19 and 26; earlier Mondays are past")
+
+	// a window entirely in the past prices nothing and keeps the requested range
+	code, est = call(t, srv, http.MethodGet, base+"/projected-estimate?from=2026-09-01&to=2026-09-30", nil)
+	require.Equal(t, http.StatusOK, code, est)
+	assert.Equal(t, map[string]any{"preset": "custom", "start": "2026-09-01", "end": "2026-09-30"}, est["range"])
+	assert.InDelta(t, 0, est["visit_count"], 0)
+	assert.Equal(t, "0.00", est["total"])
+
 	// customer route merges both plans by date
 	code, merged := call(t, srv, http.MethodGet, fmt.Sprintf("/api/v1/customers/%d/recurring-occurrences%s", cust, window), nil)
 	require.Equal(t, http.StatusOK, code, merged)

@@ -223,7 +223,7 @@ func (r *DashboardRepository) ActiveServices(ctx context.Context, q model.Servic
 	for i, row := range rows {
 		out[i] = model.ServiceRow{
 			ServiceID: row.ServiceID, Name: deref(row.ServiceName), IsRecurring: row.IsRecurring,
-			Count: row.Count, CustomerCount: row.CustomerCount, Amount: row.Amount,
+			Count: row.Count, RecurringCount: row.RecurringCount, CustomerCount: row.CustomerCount, Amount: row.Amount,
 		}
 	}
 	return out, nil

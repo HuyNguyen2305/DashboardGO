@@ -7,6 +7,7 @@ package mocks
 import (
 	"context"
 	"dashboardgo/internal/model"
+	"time"
 
 	"github.com/shopspring/decimal"
 	mock "github.com/stretchr/testify/mock"
@@ -596,45 +597,46 @@ func (_c *MockRecurringRepository_ListPlans_Call) RunAndReturn(run func(ctx cont
 	return _c
 }
 
-// PlanHasLinkedJobs provides a mock function for the type MockRecurringRepository
-func (_mock *MockRecurringRepository) PlanHasLinkedJobs(ctx context.Context, id int64) (bool, error) {
-	ret := _mock.Called(ctx, id)
+// PlanHasLinkedJobsFrom provides a mock function for the type MockRecurringRepository
+func (_mock *MockRecurringRepository) PlanHasLinkedJobsFrom(ctx context.Context, id int64, from time.Time) (bool, error) {
+	ret := _mock.Called(ctx, id, from)
 
 	if len(ret) == 0 {
-		panic("no return value specified for PlanHasLinkedJobs")
+		panic("no return value specified for PlanHasLinkedJobsFrom")
 	}
 
 	var r0 bool
 	var r1 error
-	if returnFunc, ok := ret.Get(0).(func(context.Context, int64) (bool, error)); ok {
-		return returnFunc(ctx, id)
+	if returnFunc, ok := ret.Get(0).(func(context.Context, int64, time.Time) (bool, error)); ok {
+		return returnFunc(ctx, id, from)
 	}
-	if returnFunc, ok := ret.Get(0).(func(context.Context, int64) bool); ok {
-		r0 = returnFunc(ctx, id)
+	if returnFunc, ok := ret.Get(0).(func(context.Context, int64, time.Time) bool); ok {
+		r0 = returnFunc(ctx, id, from)
 	} else {
 		r0 = ret.Get(0).(bool)
 	}
-	if returnFunc, ok := ret.Get(1).(func(context.Context, int64) error); ok {
-		r1 = returnFunc(ctx, id)
+	if returnFunc, ok := ret.Get(1).(func(context.Context, int64, time.Time) error); ok {
+		r1 = returnFunc(ctx, id, from)
 	} else {
 		r1 = ret.Error(1)
 	}
 	return r0, r1
 }
 
-// MockRecurringRepository_PlanHasLinkedJobs_Call is a *mock.Call that shadows Run/Return methods with type explicit version for method 'PlanHasLinkedJobs'
-type MockRecurringRepository_PlanHasLinkedJobs_Call struct {
+// MockRecurringRepository_PlanHasLinkedJobsFrom_Call is a *mock.Call that shadows Run/Return methods with type explicit version for method 'PlanHasLinkedJobsFrom'
+type MockRecurringRepository_PlanHasLinkedJobsFrom_Call struct {
 	*mock.Call
 }
 
-// PlanHasLinkedJobs is a helper method to define mock.On call
+// PlanHasLinkedJobsFrom is a helper method to define mock.On call
 //   - ctx context.Context
 //   - id int64
-func (_e *MockRecurringRepository_Expecter) PlanHasLinkedJobs(ctx any, id any) *MockRecurringRepository_PlanHasLinkedJobs_Call {
-	return &MockRecurringRepository_PlanHasLinkedJobs_Call{Call: _e.mock.On("PlanHasLinkedJobs", ctx, id)}
+//   - from time.Time
+func (_e *MockRecurringRepository_Expecter) PlanHasLinkedJobsFrom(ctx any, id any, from any) *MockRecurringRepository_PlanHasLinkedJobsFrom_Call {
+	return &MockRecurringRepository_PlanHasLinkedJobsFrom_Call{Call: _e.mock.On("PlanHasLinkedJobsFrom", ctx, id, from)}
 }
 
-func (_c *MockRecurringRepository_PlanHasLinkedJobs_Call) Run(run func(ctx context.Context, id int64)) *MockRecurringRepository_PlanHasLinkedJobs_Call {
+func (_c *MockRecurringRepository_PlanHasLinkedJobsFrom_Call) Run(run func(ctx context.Context, id int64, from time.Time)) *MockRecurringRepository_PlanHasLinkedJobsFrom_Call {
 	_c.Call.Run(func(args mock.Arguments) {
 		var arg0 context.Context
 		if args[0] != nil {
@@ -644,20 +646,25 @@ func (_c *MockRecurringRepository_PlanHasLinkedJobs_Call) Run(run func(ctx conte
 		if args[1] != nil {
 			arg1 = args[1].(int64)
 		}
+		var arg2 time.Time
+		if args[2] != nil {
+			arg2 = args[2].(time.Time)
+		}
 		run(
 			arg0,
 			arg1,
+			arg2,
 		)
 	})
 	return _c
 }
 
-func (_c *MockRecurringRepository_PlanHasLinkedJobs_Call) Return(b bool, err error) *MockRecurringRepository_PlanHasLinkedJobs_Call {
+func (_c *MockRecurringRepository_PlanHasLinkedJobsFrom_Call) Return(b bool, err error) *MockRecurringRepository_PlanHasLinkedJobsFrom_Call {
 	_c.Call.Return(b, err)
 	return _c
 }
 
-func (_c *MockRecurringRepository_PlanHasLinkedJobs_Call) RunAndReturn(run func(ctx context.Context, id int64) (bool, error)) *MockRecurringRepository_PlanHasLinkedJobs_Call {
+func (_c *MockRecurringRepository_PlanHasLinkedJobsFrom_Call) RunAndReturn(run func(ctx context.Context, id int64, from time.Time) (bool, error)) *MockRecurringRepository_PlanHasLinkedJobsFrom_Call {
 	_c.Call.Return(run)
 	return _c
 }

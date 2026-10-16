@@ -49,7 +49,8 @@ type StatsQuery struct {
 	OnlineJobStatuses       []string
 }
 
-// DashboardStats is the top Stats row.
+// DashboardStats is the top Stats row. NewJobsBookedOnline and TotalNewJobs are money sums
+// (tax included), not counts.
 type DashboardStats struct {
 	Revenue             decimal.Decimal
 	Collected           decimal.Decimal
@@ -179,8 +180,9 @@ type ForecastSeries struct {
 	RecurringTotal decimal.Decimal
 }
 
-// ActiveJobStatuses are the job statuses counted by the Active Services widget.
-var ActiveJobStatuses = []string{"incomplete"}
+// ActiveJobStatuses are the job statuses counted by the Active Services widget: open jobs,
+// i.e. not completed, canceled or terminated.
+var ActiveJobStatuses = []string{"incomplete", "reschedule", "workpool"}
 
 // CustomerSources is the legend order of the customers-by-source chart. "na" is a customer with no source.
 var CustomerSources = []string{"yelp", "angieslist", "craigslist", "facebook", "google", "referral", "na"}
@@ -212,13 +214,14 @@ type StaffRevenue struct {
 
 // ServiceRow is one line of Active Services. A nil ServiceID is the "No service" row.
 type ServiceRow struct {
-	ServiceID     *int64
-	Name          string
-	IsRecurring   bool
-	Count         int64 // visits (jobs)
-	CustomerCount int64 // distinct customers
-	Amount        decimal.Decimal
-	Percent       float64
+	ServiceID      *int64
+	Name           string
+	IsRecurring    bool  // the service is marked recurring in the catalogue
+	Count          int64 // visits (jobs)
+	RecurringCount int64 // visits on a recurring service or fulfilling a recurring plan
+	CustomerCount  int64 // distinct customers
+	Amount         decimal.Decimal
+	Percent        float64
 }
 
 // ServiceCustomers counts the distinct customers behind the Active Services widget.
@@ -229,6 +232,7 @@ type ServiceCustomers struct {
 
 // ActiveServices is the Active Services widget.
 // TotalCount and RecurringCount are visits; the ServiceCustomers fields are distinct customers.
+// A recurring visit is one on a recurring service or one fulfilling a recurring plan.
 type ActiveServices struct {
 	Rows           []ServiceRow
 	TotalCount     int64

@@ -224,10 +224,13 @@ repository maps pg `23503` FK violations to it, so pgx errors never reach the ha
 
 ### PATCH and the cadence lock
 - Always editable: `location_id`, `staff_id`, `end_date`, `quantity`, `unit_price`, `tax_rate`, `payment_terms_days`.
+  Moving `end_date` before a booked visit (or canceling the plan) leaves that linked job booked: job
+  management owns real jobs.
 - Cadence fields (`interval_unit`, `interval_count`, `start_date`) can only change while the plan has **no
-  linked jobs**. Otherwise 409 `model.ErrCadenceLocked`, because linked jobs are keyed by
-  `occurrence_date` and a new cadence would orphan them and count visits twice. To change a cadence in use,
-  cancel the plan and create a new one.
+  linked jobs on visits dated today or later**. Otherwise 409 `model.ErrCadenceLocked`, because linked jobs
+  are keyed by `occurrence_date` and a new cadence would orphan them and count visits twice. Jobs on past
+  visits don't lock it: past visits are never projected, so they can't be orphaned or double counted. To
+  change a cadence with upcoming bookings, cancel the plan and create a new one.
 - `customer_id`, `service_id` and `status` are rejected in PATCH (400).
 - Runs in `WithTx`: `SELECT … FOR UPDATE` on the plan, check for linked jobs, update.
 

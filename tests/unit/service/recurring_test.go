@@ -35,6 +35,13 @@ func newRecurringSvc(t *testing.T) (*service.RecurringService, *mocks.MockRecurr
 	return service.NewRecurringService(repo, daterange.NewResolver(loc, func() time.Time { return fixed })), repo
 }
 
+// lockFrom matches the day the cadence lock checks linked visits from: today (Oct 15) at local midnight.
+func lockFrom(t *testing.T) any {
+	t.Helper()
+	today := time.Date(2026, time.October, 15, 0, 0, 0, 0, recurringLoc(t))
+	return mock.MatchedBy(func(from time.Time) bool { return from.Equal(today) })
+}
+
 func expectTx(repo *mocks.MockRecurringRepository) {
 	repo.EXPECT().WithTx(mock.Anything, model.TxOptions{}, mock.Anything).
 		RunAndReturn(func(ctx context.Context, _ model.TxOptions, fn func(context.Context) error) error {
@@ -223,7 +230,7 @@ func TestRecurringUpdate(t *testing.T) {
 			expectTx(repo)
 			repo.EXPECT().GetPlanForUpdate(mock.Anything, int64(5)).Return(tc.plan, nil)
 			if tc.wantJobsQ {
-				repo.EXPECT().PlanHasLinkedJobs(mock.Anything, int64(5)).Return(tc.hasJobs, nil)
+				repo.EXPECT().PlanHasLinkedJobsFrom(mock.Anything, int64(5), lockFrom(t)).Return(tc.hasJobs, nil)
 			}
 			if tc.wantUpdate {
 				repo.EXPECT().UpdatePlan(mock.Anything, tc.patch.Apply(tc.plan)).Return(model.RecurringPlan{ID: 5, Quantity: decimal.NewFromInt(9)}, nil)
@@ -255,7 +262,7 @@ func TestRecurringUpdateRepoErrors(t *testing.T) {
 		svc, repo := newRecurringSvc(t)
 		expectTx(repo)
 		repo.EXPECT().GetPlanForUpdate(mock.Anything, int64(5)).Return(plan, nil)
-		repo.EXPECT().PlanHasLinkedJobs(mock.Anything, int64(5)).Return(false, errBoom)
+		repo.EXPECT().PlanHasLinkedJobsFrom(mock.Anything, int64(5), lockFrom(t)).Return(false, errBoom)
 		_, err := svc.Update(context.Background(), 5, patch)
 		require.ErrorIs(t, err, errBoom)
 		assert.NotEqual(t, errBoom.Error(), err.Error())
@@ -264,7 +271,7 @@ func TestRecurringUpdateRepoErrors(t *testing.T) {
 		svc, repo := newRecurringSvc(t)
 		expectTx(repo)
 		repo.EXPECT().GetPlanForUpdate(mock.Anything, int64(5)).Return(plan, nil)
-		repo.EXPECT().PlanHasLinkedJobs(mock.Anything, int64(5)).Return(false, nil)
+		repo.EXPECT().PlanHasLinkedJobsFrom(mock.Anything, int64(5), lockFrom(t)).Return(false, nil)
 		repo.EXPECT().UpdatePlan(mock.Anything, mock.Anything).Return(model.RecurringPlan{}, errBoom)
 		_, err := svc.Update(context.Background(), 5, patch)
 		require.ErrorIs(t, err, errBoom)
@@ -350,7 +357,7 @@ func TestRecurringUpdateEmptyPatchReturnsCurrentPlan(t *testing.T) {
 			svc, repo := newRecurringSvc(t)
 			expectTx(repo)
 			repo.EXPECT().GetPlanForUpdate(mock.Anything, int64(5)).Return(tc.plan, nil)
-			// No UpdatePlan or PlanHasLinkedJobs expectation: the mock fails the test if either is called.
+			// No UpdatePlan or PlanHasLinkedJobsFrom expectation: the mock fails the test if either is called.
 
 			got, err := svc.Update(context.Background(), 5, model.RecurringPlanPatch{})
 			if tc.wantErr != nil {

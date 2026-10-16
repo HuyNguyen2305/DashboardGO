@@ -26,7 +26,7 @@ type RecurringRepository interface {
 	ListPlans(ctx context.Context, q model.PlanListQuery) ([]model.RecurringPlan, error)
 	UpdatePlan(ctx context.Context, p model.RecurringPlan) (model.RecurringPlan, error)
 	SetPlanStatus(ctx context.Context, id int64, status string) (model.RecurringPlan, error)
-	PlanHasLinkedJobs(ctx context.Context, id int64) (bool, error)
+	PlanHasLinkedJobsFrom(ctx context.Context, id int64, from time.Time) (bool, error)
 	ActivePlansForCustomer(ctx context.Context, customerID int64, w model.Window) ([]model.RecurringPlan, error)
 	ActivePlansOverlapping(ctx context.Context, w model.Window) ([]model.RecurringPlan, error)
 	LinkedOccurrences(ctx context.Context, planIDs []int64, w model.Window) (model.LinkedVisits, error)
@@ -100,8 +100,11 @@ func (s *RecurringService) List(ctx context.Context, q model.PlanListQuery) (mod
 	return page, nil
 }
 
-// Update applies patch under a row lock. Cadence fields only change while the plan has
-// no linked jobs, since those jobs are keyed by occurrence date.
+// Update applies patch under a row lock. Cadence fields only change while no linked job fulfils a
+// visit dated today or later: those jobs are keyed by occurrence date, so a new cadence would orphan
+// them and count their visits twice. Past visits are never projected, so their jobs don't lock it.
+// end_date is always editable: jobs already linked to visits after the new end stay booked, since
+// job management owns them.
 func (s *RecurringService) Update(ctx context.Context, id int64, patch model.RecurringPlanPatch) (model.RecurringPlan, error) {
 	var out model.RecurringPlan
 	err := s.repo.WithTx(ctx, model.TxOptions{}, func(ctx context.Context) error {
@@ -122,7 +125,7 @@ func (s *RecurringService) Update(ctx context.Context, id int64, patch model.Rec
 		}
 		// Only a real change of unit, count or start counts, not the same values re-sent.
 		if patch.ChangesCadence(plan.Rule) {
-			locked, err := s.repo.PlanHasLinkedJobs(ctx, id)
+			locked, err := s.repo.PlanHasLinkedJobsFrom(ctx, id, s.dates.Today())
 			if err != nil {
 				return fmt.Errorf("plan %d: %w", id, err)
 			}
@@ -143,6 +146,7 @@ func (s *RecurringService) Update(ctx context.Context, id int64, patch model.Rec
 }
 
 // Transition moves a plan to the status action leads to. Repeating an action is a no-op.
+// Canceling leaves jobs already linked to its visits booked, since job management owns them.
 func (s *RecurringService) Transition(ctx context.Context, id int64, action model.PlanAction) (model.RecurringPlan, error) {
 	var out model.RecurringPlan
 	err := s.repo.WithTx(ctx, model.TxOptions{}, func(ctx context.Context) error {
@@ -255,6 +259,8 @@ func (s *RecurringService) ProjectedInvoices(ctx context.Context, id int64, w mo
 }
 
 // ProjectedEstimate prices every visit of an active or paused plan from today on, booked or not.
+// Its From/To is the period actually priced: w starting no earlier than today. When all of w is
+// in the past, nothing is priced and From/To is w itself.
 func (s *RecurringService) ProjectedEstimate(ctx context.Context, id int64, w model.Window) (model.ProjectedEstimate, error) {
 	if err := checkWindow(w, MaxPlanWindowMonths); err != nil {
 		return model.ProjectedEstimate{}, fmt.Errorf("projected estimate: %w", err)
@@ -266,7 +272,10 @@ func (s *RecurringService) ProjectedEstimate(ctx context.Context, id int64, w mo
 	if plan.Status == model.PlanStatusCanceled {
 		return model.ProjectedEstimate{}, fmt.Errorf("projected estimate for plan %d: %w", id, model.ErrPlanCanceled)
 	}
-	eff, _ := s.effectiveWindow(w)
+	eff, ok := s.effectiveWindow(w)
+	if !ok {
+		return model.ProjectEstimate(plan, nil, w), nil
+	}
 	return model.ProjectEstimate(plan, plan.Rule.Between(eff.From, eff.To), eff), nil
 }
 

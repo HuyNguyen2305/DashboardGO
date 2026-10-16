@@ -204,48 +204,46 @@ func TestInvoiceAgingWidget(t *testing.T) {
 	assert.Equal(t, int64(12), w.TotalCount)
 }
 
-func TestYearSeriesWidgets(t *testing.T) {
+func TestRevenuePerMonth(t *testing.T) {
 	r, err := resolver(t).Year(2026)
 	require.NoError(t, err)
-	wantQuery := model.MonthlyQuery{
-		Start: r.Start, End: r.End, TZ: "Asia/Ho_Chi_Minh",
-		RevenueStatuses: []string{"sent", "partial_paid", "paid"},
-		JobStatuses:     []string{"incomplete", "completed", "reschedule", "workpool"},
+	now := resolver(t).Now() // 2026-10-12 10:00 GMT+7
+	query := func(end time.Time) model.MonthlyQuery {
+		return model.MonthlyQuery{
+			Start: r.Start, End: end, TZ: "Asia/Ho_Chi_Minh",
+			RevenueStatuses: []string{"sent", "partial_paid", "paid"},
+			JobStatuses:     []string{"incomplete", "completed", "reschedule", "workpool"},
+		}
 	}
-	repoMonths := []model.MonthlyAmount{
-		{Month: time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC), Amount: dec("380.00")},
-		{Month: time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC), Amount: dec("830.00")},
-	}
+	aug := model.MonthlyAmount{Month: time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC), Amount: dec("380.00")}
+	oct := model.MonthlyAmount{Month: time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC), Amount: dec("830.00")}
 
 	cases := []struct {
-		name   string
-		expect func(*mocks.MockDashboardRepository)
-		call   func(*service.DashboardService) (model.YearSeries, error)
+		name       string
+		until      time.Time
+		wantEnd    time.Time
+		repoMonths []model.MonthlyAmount
+		wantTotal  string
 	}{
-		{
-			"revenue per month",
-			func(m *mocks.MockDashboardRepository) {
-				m.EXPECT().MonthlyRevenue(mock.Anything, wantQuery).Return(repoMonths, nil).Once()
-			},
-			func(s *service.DashboardService) (model.YearSeries, error) {
-				return s.RevenuePerMonth(context.Background(), r)
-			},
-		},
+		{"a past year is queried whole", time.Date(2027, 3, 1, 0, 0, 0, 0, hcm(t)), r.End, []model.MonthlyAmount{aug, oct}, "1210.00"},
+		{"the current year stops at now", now, now, []model.MonthlyAmount{aug, oct}, "1210.00"},
+		{"a future year queries nothing", time.Date(2025, 6, 1, 0, 0, 0, 0, hcm(t)), r.Start, nil, "0.00"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			repo := mocks.NewMockDashboardRepository(t)
-			tc.expect(repo)
+			repo.EXPECT().MonthlyRevenue(mock.Anything, query(tc.wantEnd)).Return(tc.repoMonths, nil).Once()
 
-			s, err := tc.call(service.NewDashboardService(repo))
+			s, err := service.NewDashboardService(repo).RevenuePerMonth(context.Background(), r, tc.until)
 			require.NoError(t, err)
-			require.Len(t, s.Months, 12)
+			require.Len(t, s.Months, 12, "every month of the year is listed, even past until")
 			assert.Equal(t, "2026-01", s.Months[0].Month.Format("2006-01"))
-			assert.True(t, s.Months[0].Amount.IsZero())
-			assert.True(t, s.Months[7].Amount.Equal(dec("380.00")))
-			assert.True(t, s.Months[9].Amount.Equal(dec("830.00")))
+			assert.Equal(t, "2026-12", s.Months[11].Month.Format("2006-01"))
 			assert.True(t, s.Months[11].Amount.IsZero())
-			assert.True(t, s.Total.Equal(dec("1210.00")), s.Total.String())
+			assert.True(t, s.Total.Equal(dec(tc.wantTotal)), s.Total.String())
+			for _, m := range tc.repoMonths {
+				assert.True(t, s.Months[m.Month.Month()-1].Amount.Equal(m.Amount), m.Month.Format("2006-01"))
+			}
 		})
 	}
 }
@@ -312,7 +310,7 @@ func TestWidgetErrorsAreWrapped(t *testing.T) {
 		{"revenue per month", func(m *mocks.MockDashboardRepository) {
 			m.EXPECT().MonthlyRevenue(mock.Anything, mock.Anything).Return(nil, dbErr).Once()
 		}, func(s *service.DashboardService) error {
-			_, err := s.RevenuePerMonth(context.Background(), r)
+			_, err := s.RevenuePerMonth(context.Background(), r, r.End)
 			return err
 		}},
 		{"sales forecast", func(m *mocks.MockDashboardRepository) {

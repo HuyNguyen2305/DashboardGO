@@ -71,11 +71,13 @@ func TestJobsWithoutStaffFilterMeansAllSchedules(t *testing.T) {
 	assert.Contains(t, body, `"rows":[]`, "empty rows must encode as [] not null")
 }
 
-func TestJobsStaffFilterAcceptsUnassigned(t *testing.T) {
+func TestJobsStaffFilterParsing(t *testing.T) {
 	cases := []struct {
 		name, query string
 		want        model.StaffFilter
 	}{
+		{"empty value means all schedules", "staff_ids=", model.StaffFilter{}},
+		{"only separators mean all schedules", "staff_ids=,", model.StaffFilter{}},
 		{"only unassigned", "staff_ids=unassigned", model.StaffFilter{Unassigned: true}},
 		{"staff and unassigned", "staff_ids=1,unassigned&staff_ids=2", model.StaffFilter{IDs: []int64{1, 2}, Unassigned: true}},
 		{"unassigned twice", "staff_ids=unassigned,unassigned", model.StaffFilter{Unassigned: true}},
@@ -152,6 +154,59 @@ func TestBreakdownEndpoints(t *testing.T) {
 	}
 }
 
+// atFrozenNow matches the router's clock, 2026-10-12 10:00 GMT+7.
+func atFrozenNow() any {
+	return mock.MatchedBy(func(t time.Time) bool { return t.Format("2006-01-02 15:04 -07") == "2026-10-12 10:00 +07" })
+}
+
+// endsAt matches a This Month range whose End is end (formatted as time.DateTime).
+func endsAt(end string) any {
+	return mock.MatchedBy(func(r daterange.Range) bool {
+		return r.Preset == daterange.ThisMonth &&
+			r.Start.Format(time.DateTime) == "2026-10-01 00:00:00" &&
+			r.End.Format(time.DateTime) == end
+	})
+}
+
+func TestPeriodWidgetsForwardTheRightRange(t *testing.T) {
+	// The router's clock is frozen at 2026-10-12 10:00 GMT+7.
+	const capped, whole = "2026-10-12 10:00:00", "2026-11-01 00:00:00"
+	cases := []struct {
+		path   string
+		expect func(*mocks.MockDashboardService)
+	}{
+		// Documents and payments dated later in the period haven't happened yet.
+		{"/api/v1/dashboard/invoices", func(m *mocks.MockDashboardService) {
+			m.EXPECT().Invoices(mock.Anything, endsAt(capped)).Return(model.Breakdown{}, nil).Once()
+		}},
+		{"/api/v1/dashboard/estimates", func(m *mocks.MockDashboardService) {
+			m.EXPECT().Estimates(mock.Anything, endsAt(capped)).Return(model.Breakdown{}, nil).Once()
+		}},
+		{"/api/v1/dashboard/payments", func(m *mocks.MockDashboardService) {
+			m.EXPECT().Payments(mock.Anything, endsAt(capped)).Return(model.Breakdown{}, nil).Once()
+		}},
+		{"/api/v1/dashboard/revenue-by-staff", func(m *mocks.MockDashboardService) {
+			m.EXPECT().RevenueByStaff(mock.Anything, endsAt(capped)).Return(model.StaffRevenue{}, nil).Once()
+		}},
+		// Jobs scheduled later in the period are upcoming work, so these keep the whole month.
+		{"/api/v1/dashboard/jobs", func(m *mocks.MockDashboardService) {
+			m.EXPECT().Jobs(mock.Anything, endsAt(whole), model.StaffFilter{}).Return(model.JobsWidget{}, nil).Once()
+		}},
+		{"/api/v1/dashboard/active-services", func(m *mocks.MockDashboardService) {
+			m.EXPECT().ActiveServices(mock.Anything, endsAt(whole)).Return(model.ActiveServices{}, nil).Once()
+		}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.path, func(t *testing.T) {
+			svc := mocks.NewMockDashboardService(t)
+			tc.expect(svc)
+			code, body := call(t, svc, tc.path+"?range=this_month")
+			require.Equal(t, http.StatusOK, code, body)
+			assert.Contains(t, body, `"end":"2026-10-31"`, "the response still echoes the whole period")
+		})
+	}
+}
+
 func TestInvoiceAgingEndpointUsesToday(t *testing.T) {
 	svc := mocks.NewMockDashboardService(t)
 	svc.EXPECT().InvoiceAging(mock.Anything, mock.MatchedBy(func(asOf time.Time) bool {
@@ -196,7 +251,7 @@ func TestYearSeriesEndpoints(t *testing.T) {
 		expect func(*mocks.MockDashboardService)
 	}{
 		{"/api/v1/dashboard/revenue-per-month", func(m *mocks.MockDashboardService) {
-			m.EXPECT().RevenuePerMonth(mock.Anything, isYear(2025)).Return(series, nil).Once()
+			m.EXPECT().RevenuePerMonth(mock.Anything, isYear(2025), atFrozenNow()).Return(series, nil).Once()
 		}},
 	}
 	for _, tc := range cases {
@@ -216,7 +271,7 @@ func TestYearSeriesEndpoints(t *testing.T) {
 	})
 	t.Run("default year", func(t *testing.T) {
 		svc := mocks.NewMockDashboardService(t)
-		svc.EXPECT().RevenuePerMonth(mock.Anything, isYear(2026)).Return(model.YearSeries{}, nil).Once()
+		svc.EXPECT().RevenuePerMonth(mock.Anything, isYear(2026), atFrozenNow()).Return(model.YearSeries{}, nil).Once()
 		code, body := call(t, svc, "/api/v1/dashboard/revenue-per-month")
 		assert.Equal(t, http.StatusOK, code, body)
 	})

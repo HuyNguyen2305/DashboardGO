@@ -235,7 +235,8 @@ func (h *RecurringHandler) ProjectedEstimate(c *gin.Context) {
 		WriteError(c, err)
 		return
 	}
-	w, rng, err := h.parseWindow(c, defaultEstimateMonths)
+	// The response echoes the period actually priced, which starts no earlier than today.
+	w, _, err := h.parseWindow(c, defaultEstimateMonths)
 	if err != nil {
 		WriteError(c, err)
 		return
@@ -245,7 +246,7 @@ func (h *RecurringHandler) ProjectedEstimate(c *gin.Context) {
 		WriteError(c, err)
 		return
 	}
-	c.JSON(http.StatusOK, dto.NewProjectedEstimateResponse(rng, est))
+	c.JSON(http.StatusOK, dto.NewProjectedEstimateResponse(est))
 }
 
 // CustomerOccurrences serves GET /api/v1/customers/:id/recurring-occurrences?from=&to=.

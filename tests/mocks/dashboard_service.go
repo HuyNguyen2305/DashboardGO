@@ -584,8 +584,8 @@ func (_c *MockDashboardService_RevenueByStaff_Call) RunAndReturn(run func(ctx co
 }
 
 // RevenuePerMonth provides a mock function for the type MockDashboardService
-func (_mock *MockDashboardService) RevenuePerMonth(ctx context.Context, r daterange.Range) (model.YearSeries, error) {
-	ret := _mock.Called(ctx, r)
+func (_mock *MockDashboardService) RevenuePerMonth(ctx context.Context, r daterange.Range, until time.Time) (model.YearSeries, error) {
+	ret := _mock.Called(ctx, r, until)
 
 	if len(ret) == 0 {
 		panic("no return value specified for RevenuePerMonth")
@@ -593,16 +593,16 @@ func (_mock *MockDashboardService) RevenuePerMonth(ctx context.Context, r datera
 
 	var r0 model.YearSeries
 	var r1 error
-	if returnFunc, ok := ret.Get(0).(func(context.Context, daterange.Range) (model.YearSeries, error)); ok {
-		return returnFunc(ctx, r)
+	if returnFunc, ok := ret.Get(0).(func(context.Context, daterange.Range, time.Time) (model.YearSeries, error)); ok {
+		return returnFunc(ctx, r, until)
 	}
-	if returnFunc, ok := ret.Get(0).(func(context.Context, daterange.Range) model.YearSeries); ok {
-		r0 = returnFunc(ctx, r)
+	if returnFunc, ok := ret.Get(0).(func(context.Context, daterange.Range, time.Time) model.YearSeries); ok {
+		r0 = returnFunc(ctx, r, until)
 	} else {
 		r0 = ret.Get(0).(model.YearSeries)
 	}
-	if returnFunc, ok := ret.Get(1).(func(context.Context, daterange.Range) error); ok {
-		r1 = returnFunc(ctx, r)
+	if returnFunc, ok := ret.Get(1).(func(context.Context, daterange.Range, time.Time) error); ok {
+		r1 = returnFunc(ctx, r, until)
 	} else {
 		r1 = ret.Error(1)
 	}
@@ -617,11 +617,12 @@ type MockDashboardService_RevenuePerMonth_Call struct {
 // RevenuePerMonth is a helper method to define mock.On call
 //   - ctx context.Context
 //   - r daterange.Range
-func (_e *MockDashboardService_Expecter) RevenuePerMonth(ctx any, r any) *MockDashboardService_RevenuePerMonth_Call {
-	return &MockDashboardService_RevenuePerMonth_Call{Call: _e.mock.On("RevenuePerMonth", ctx, r)}
+//   - until time.Time
+func (_e *MockDashboardService_Expecter) RevenuePerMonth(ctx any, r any, until any) *MockDashboardService_RevenuePerMonth_Call {
+	return &MockDashboardService_RevenuePerMonth_Call{Call: _e.mock.On("RevenuePerMonth", ctx, r, until)}
 }
 
-func (_c *MockDashboardService_RevenuePerMonth_Call) Run(run func(ctx context.Context, r daterange.Range)) *MockDashboardService_RevenuePerMonth_Call {
+func (_c *MockDashboardService_RevenuePerMonth_Call) Run(run func(ctx context.Context, r daterange.Range, until time.Time)) *MockDashboardService_RevenuePerMonth_Call {
 	_c.Call.Run(func(args mock.Arguments) {
 		var arg0 context.Context
 		if args[0] != nil {
@@ -631,9 +632,14 @@ func (_c *MockDashboardService_RevenuePerMonth_Call) Run(run func(ctx context.Co
 		if args[1] != nil {
 			arg1 = args[1].(daterange.Range)
 		}
+		var arg2 time.Time
+		if args[2] != nil {
+			arg2 = args[2].(time.Time)
+		}
 		run(
 			arg0,
 			arg1,
+			arg2,
 		)
 	})
 	return _c
@@ -644,7 +650,7 @@ func (_c *MockDashboardService_RevenuePerMonth_Call) Return(yearSeries model.Yea
 	return _c
 }
 
-func (_c *MockDashboardService_RevenuePerMonth_Call) RunAndReturn(run func(ctx context.Context, r daterange.Range) (model.YearSeries, error)) *MockDashboardService_RevenuePerMonth_Call {
+func (_c *MockDashboardService_RevenuePerMonth_Call) RunAndReturn(run func(ctx context.Context, r daterange.Range, until time.Time) (model.YearSeries, error)) *MockDashboardService_RevenuePerMonth_Call {
 	_c.Call.Return(run)
 	return _c
 }

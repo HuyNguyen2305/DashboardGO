@@ -133,9 +133,10 @@ func (s *DashboardService) InvoiceAging(ctx context.Context, asOf time.Time) (mo
 	return model.AgingWidget{Breakdown: fillBreakdown(model.AgingBuckets, rows, byAmount), AsOf: asOf}, nil
 }
 
-// RevenuePerMonth returns revenue for every month in r (normally one year).
-func (s *DashboardService) RevenuePerMonth(ctx context.Context, r daterange.Range) (model.YearSeries, error) {
-	months, err := s.repo.MonthlyRevenue(ctx, s.monthlyQuery(r))
+// RevenuePerMonth returns revenue for every month in r (normally one year). Invoices dated after
+// until are left out, as in the Stats row, so months after it show zero but are still listed.
+func (s *DashboardService) RevenuePerMonth(ctx context.Context, r daterange.Range, until time.Time) (model.YearSeries, error) {
+	months, err := s.repo.MonthlyRevenue(ctx, s.monthlyQuery(r.CapAt(until)))
 	if err != nil {
 		return model.YearSeries{}, fmt.Errorf("revenue per month widget: %w", err)
 	}
@@ -229,7 +230,7 @@ func (s *DashboardService) RevenueByStaff(ctx context.Context, r daterange.Range
 	return w, nil
 }
 
-// ActiveServices returns incomplete jobs in r grouped by service, biggest first.
+// ActiveServices returns open jobs (model.ActiveJobStatuses) in r grouped by service, biggest first.
 // Percent is each service's share of the amount.
 func (s *DashboardService) ActiveServices(ctx context.Context, r daterange.Range) (model.ActiveServices, error) {
 	q := model.ServicesQuery{Start: r.Start, End: r.End, Statuses: model.ActiveJobStatuses}
@@ -254,9 +255,7 @@ func (s *DashboardService) ActiveServices(ctx context.Context, r daterange.Range
 		amounts[i] = row.Amount
 		w.TotalCount += row.Count
 		w.TotalAmount = w.TotalAmount.Add(row.Amount)
-		if row.IsRecurring {
-			w.RecurringCount += row.Count
-		}
+		w.RecurringCount += row.RecurringCount
 	}
 	pct := Shares(amounts)
 	for i, row := range rows {

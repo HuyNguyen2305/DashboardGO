@@ -57,8 +57,11 @@ RETURNING id;
 UPDATE recurring_plans SET status = @status, updated_at = now() WHERE id = @id
 RETURNING id;
 
--- name: RecurringPlanHasLinkedJobs :one
-SELECT EXISTS (SELECT 1 FROM jobs WHERE recurring_plan_id = @id::bigint)::boolean;
+-- name: RecurringPlanHasLinkedJobsFrom :one
+-- Whether a job fulfils a visit of the plan dated on or after from_date.
+SELECT EXISTS (
+    SELECT 1 FROM jobs WHERE recurring_plan_id = @id::bigint AND occurrence_date >= @from_date::date
+)::boolean;
 
 -- name: ActiveRecurringPlansOverlapping :many
 -- Active plans whose [start_date, end_date] overlaps the half-open window [from, to).

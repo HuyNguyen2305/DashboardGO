@@ -8,7 +8,9 @@ func Money(d decimal.Decimal) string {
 	return d.StringFixed(2)
 }
 
-// StatsResponse is the top Stats row of the dashboard.
+// StatsResponse is the top Stats row of the dashboard. Revenue is invoice subtotals (tax excluded).
+// NewJobsBookedOnline and TotalNewJobs are money sums, not counts: the totals of online-booked jobs
+// and of new estimates and invoices (tax included).
 type StatsResponse struct {
 	Range               DateRange `json:"range"`
 	Revenue             string    `json:"revenue"`
@@ -26,7 +28,8 @@ type BreakdownRow struct {
 	Percent float64 `json:"percent"`
 }
 
-// BreakdownResponse serves the Invoices, Estimates and Payments widgets.
+// BreakdownResponse serves the Invoices, Estimates and Payments widgets. Invoice and estimate
+// amounts are document totals (tax included), unlike Revenue; payment amounts are what was received.
 type BreakdownResponse struct {
 	Range       DateRange      `json:"range"`
 	TotalAmount string         `json:"total_amount"`
@@ -100,15 +103,17 @@ type StaffRevenueResponse struct {
 }
 
 // ServiceRow is one line of Active Services. A null ServiceID is the "No service" row.
-// Count is visits (jobs); CustomerCount is the distinct customers behind them.
+// IsRecurring is the service's catalogue flag. Count is visits (jobs); RecurringCount is those on a
+// recurring service or fulfilling a recurring plan; CustomerCount is the distinct customers behind them.
 type ServiceRow struct {
-	ServiceID     *int64  `json:"service_id"`
-	Name          string  `json:"name"`
-	IsRecurring   bool    `json:"is_recurring"`
-	Count         int64   `json:"count"`
-	CustomerCount int64   `json:"customer_count"`
-	Amount        string  `json:"amount"`
-	Percent       float64 `json:"percent"`
+	ServiceID      *int64  `json:"service_id"`
+	Name           string  `json:"name"`
+	IsRecurring    bool    `json:"is_recurring"`
+	Count          int64   `json:"count"`
+	RecurringCount int64   `json:"recurring_count"`
+	CustomerCount  int64   `json:"customer_count"`
+	Amount         string  `json:"amount"`
+	Percent        float64 `json:"percent"`
 }
 
 // ActiveServicesResponse is the Active Services widget.

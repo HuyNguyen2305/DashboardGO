@@ -80,6 +80,43 @@ func TestPeriodWidgetsStopAtNow(t *testing.T) {
 	env.getJSON(t, "/api/v1/dashboard/payments", &payments)
 	assert.Equal(t, "870.26", payments.TotalAmount)
 	assert.Contains(t, payments.Rows, row("cash", 1, "3.00", 0.34)) // 0.345%, gives up the spare 0.01
+
+	// Documents dated after now are left out of every widget that counts what has happened.
+	var invoices, estimates dto.BreakdownResponse
+	var byStaff dto.StaffRevenueResponse
+	var year dto.YearSeriesResponse
+	env.getJSON(t, "/api/v1/dashboard/invoices", &invoices)
+	env.getJSON(t, "/api/v1/dashboard/estimates", &estimates)
+	env.getJSON(t, "/api/v1/dashboard/revenue-by-staff", &byStaff)
+	env.getJSON(t, "/api/v1/dashboard/revenue-per-month", &year)
+
+	_, err = env.pool.Exec(context.Background(), `
+		INSERT INTO documents (doc_type, status, number, customer_id, issued_at, job_id, subtotal, total) VALUES
+		  -- In an hour, on a staffed job: not revenue yet.
+		  ('invoice', 'sent', 'INV-LATER', 1, '2026-10-12 11:00+07',
+		   (SELECT id FROM jobs WHERE staff_id IS NOT NULL ORDER BY id LIMIT 1), 70.00, 70.00),
+		  -- Next month: Revenue per Month must not show it yet.
+		  ('invoice', 'sent', 'INV-NOV', 1, '2026-11-03 09:00+07', NULL, 80.00, 80.00);
+		INSERT INTO documents (doc_type, status, number, customer_id, issued_at, total)
+		VALUES ('estimate', 'pending', 'EST-LATER', 1, '2026-10-12 11:00+07', 90.00);`)
+	require.NoError(t, err)
+
+	var invoicesAfter, estimatesAfter dto.BreakdownResponse
+	var byStaffAfter dto.StaffRevenueResponse
+	var yearAfter dto.YearSeriesResponse
+	env.getJSON(t, "/api/v1/dashboard/invoices", &invoicesAfter)
+	env.getJSON(t, "/api/v1/dashboard/estimates", &estimatesAfter)
+	env.getJSON(t, "/api/v1/dashboard/revenue-by-staff", &byStaffAfter)
+	env.getJSON(t, "/api/v1/dashboard/revenue-per-month", &yearAfter)
+	env.getJSON(t, "/api/v1/dashboard/stats", &stats)
+
+	assert.Equal(t, invoices, invoicesAfter, "the invoice dated in an hour is left out")
+	assert.Equal(t, estimates, estimatesAfter, "the estimate dated in an hour is left out")
+	assert.Equal(t, byStaff, byStaffAfter, "the invoice dated in an hour is not staff revenue yet")
+	assert.Equal(t, year, yearAfter, "Revenue per Month leaves out invoices dated after now")
+	assert.Equal(t, stats.Revenue, yearAfter.Months[9].Amount, "October's bar matches the This Month revenue card")
+	assert.Equal(t, "0.00", yearAfter.Months[10].Amount, "November has no revenue yet")
+	assert.Len(t, yearAfter.Months, 12, "every month is still listed")
 }
 
 func TestSalesForecastCountsBookedJobs(t *testing.T) {
@@ -139,4 +176,106 @@ func TestCustomerCounts(t *testing.T) {
 	for _, row := range customerTags.Rows {
 		assert.Nil(t, row.CustomerCount, "customer tags already count customers")
 	}
+}
+
+// serviceRow returns the Active Services row named name, failing the test when there is none.
+func serviceRow(t *testing.T, w dto.ActiveServicesResponse, name string) dto.ServiceRow {
+	t.Helper()
+	for _, r := range w.Rows {
+		if r.Name == name {
+			return r
+		}
+	}
+	require.Failf(t, "row not found", "no Active Services row %q", name)
+	return dto.ServiceRow{}
+}
+
+// breakdownRow returns the breakdown row with key, failing the test when there is none.
+func breakdownRow(t *testing.T, b dto.BreakdownResponse, key string) dto.BreakdownRow {
+	t.Helper()
+	for _, r := range b.Rows {
+		if r.Key == key {
+			return r
+		}
+	}
+	require.Failf(t, "row not found", "no breakdown row %q", key)
+	return dto.BreakdownRow{}
+}
+
+func TestActiveServicesCountsOpenAndPlanJobs(t *testing.T) {
+	env := newEnv(t)
+	ctx := context.Background()
+	var before dto.ActiveServicesResponse
+	env.getJSON(t, "/api/v1/dashboard/active-services", &before)
+
+	// A monthly plan on Blank Service, which is not a recurring service; its Oct 26 visit has a job.
+	var planID int64
+	require.NoError(t, env.pool.QueryRow(ctx, `
+		INSERT INTO recurring_plans (customer_id, service_id, interval_unit, interval_count, start_date, unit_price)
+		SELECT 1, id, 'month', 1, '2026-10-26', 30.00 FROM services WHERE name = 'Blank Service'
+		RETURNING id`).Scan(&planID))
+	_, err := env.pool.Exec(ctx, `
+		INSERT INTO jobs (customer_id, service_id, status, total, scheduled_at, created_at, recurring_plan_id, occurrence_date)
+		SELECT 1, s.id, v.status, v.total, v.at, '2026-10-01 09:00+07', v.plan_id, v.occurrence_date
+		  FROM services s,
+		       (VALUES ('reschedule', 11.00, '2026-10-22 09:00+07'::timestamptz, NULL::bigint, NULL::date), -- open: counts
+		               ('canceled',   12.00, '2026-10-23 09:00+07', NULL, NULL),                           -- not open
+		               ('incomplete', 30.00, '2026-10-26 09:00+07', $1, '2026-10-26'))                    -- the plan visit
+		       v(status, total, at, plan_id, occurrence_date)
+		 WHERE s.name = 'Blank Service'`, planID)
+	require.NoError(t, err)
+	_, err = env.pool.Exec(ctx, `
+		INSERT INTO jobs (customer_id, status, total, scheduled_at, created_at)
+		VALUES (1, 'workpool', 13.00, '2026-10-24 09:00+07', '2026-10-01 09:00+07')`) // open, no service
+	require.NoError(t, err)
+
+	var got dto.ActiveServicesResponse
+	env.getJSON(t, "/api/v1/dashboard/active-services", &got)
+	assert.Equal(t, before.TotalCount+3, got.TotalCount, "reschedule + workpool + the plan visit; canceled left out")
+	assert.Equal(t, addMoney(t, before.TotalAmount, "54.00"), got.TotalAmount, "11.00 + 13.00 + 30.00")
+	assert.Equal(t, before.RecurringCount+1, got.RecurringCount, "the plan visit is recurring")
+	assert.Equal(t, before.RecurringCustomerCount, got.RecurringCustomerCount, "the same single customer")
+
+	blank := serviceRow(t, got, "Blank Service")
+	assert.Equal(t, serviceRow(t, before, "Blank Service").Count+2, blank.Count, "reschedule + the plan visit")
+	assert.Equal(t, int64(1), blank.RecurringCount, "only the plan visit")
+	assert.False(t, blank.IsRecurring, "the service itself is still not recurring")
+	assert.Equal(t, serviceRow(t, before, "No service").Count+1, serviceRow(t, got, "No service").Count, "the workpool job")
+}
+
+func TestFailedInvoicesAreNotRevenue(t *testing.T) {
+	env := newEnv(t)
+	var stats dto.StatsResponse
+	var byStaff dto.StaffRevenueResponse
+	var year dto.YearSeriesResponse
+	var invoices dto.BreakdownResponse
+	env.getJSON(t, "/api/v1/dashboard/stats", &stats)
+	env.getJSON(t, "/api/v1/dashboard/revenue-by-staff", &byStaff)
+	env.getJSON(t, "/api/v1/dashboard/revenue-per-month", &year)
+	env.getJSON(t, "/api/v1/dashboard/invoices", &invoices)
+
+	// Sent on Oct 5 for a staffed job, then the customer's payment failed.
+	_, err := env.pool.Exec(context.Background(), `
+		INSERT INTO documents (doc_type, status, number, customer_id, issued_at, job_id, subtotal, total)
+		VALUES ('invoice', 'failed', 'INV-FAILED', 1, '2026-10-05 10:00+07',
+		        (SELECT id FROM jobs WHERE staff_id IS NOT NULL ORDER BY id LIMIT 1), 40.00, 40.00)`)
+	require.NoError(t, err)
+
+	var statsAfter dto.StatsResponse
+	var byStaffAfter dto.StaffRevenueResponse
+	var yearAfter dto.YearSeriesResponse
+	var invoicesAfter dto.BreakdownResponse
+	env.getJSON(t, "/api/v1/dashboard/stats", &statsAfter)
+	env.getJSON(t, "/api/v1/dashboard/revenue-by-staff", &byStaffAfter)
+	env.getJSON(t, "/api/v1/dashboard/revenue-per-month", &yearAfter)
+	env.getJSON(t, "/api/v1/dashboard/invoices", &invoicesAfter)
+
+	assert.Equal(t, stats.Revenue, statsAfter.Revenue, "a failed invoice is not revenue")
+	assert.Equal(t, stats.TotalNewJobs, statsAfter.TotalNewJobs, "nor a new job")
+	assert.Equal(t, byStaff.TotalAmount, byStaffAfter.TotalAmount, "nor staff revenue")
+	assert.Equal(t, year.Months[9].Amount, yearAfter.Months[9].Amount, "nor October revenue per month")
+
+	failed, failedAfter := breakdownRow(t, invoices, "failed"), breakdownRow(t, invoicesAfter, "failed")
+	assert.Equal(t, failed.Count+1, failedAfter.Count, "it is still listed among the invoices")
+	assert.Equal(t, addMoney(t, failed.Amount, "40.00"), failedAfter.Amount)
 }

@@ -13,8 +13,9 @@ import (
 )
 
 const activeServiceCustomers = `-- name: ActiveServiceCustomers :one
-SELECT count(DISTINCT j.customer_id)::bigint                                AS customer_count,
-       count(DISTINCT j.customer_id) FILTER (WHERE sv.is_recurring)::bigint AS recurring_customer_count
+SELECT count(DISTINCT j.customer_id)::bigint AS customer_count,
+       count(DISTINCT j.customer_id)
+         FILTER (WHERE coalesce(sv.is_recurring, false) OR j.recurring_plan_id IS NOT NULL)::bigint AS recurring_customer_count
   FROM jobs j
   LEFT JOIN services sv ON sv.id = j.service_id
  WHERE j.status = ANY($1::text[])
@@ -32,8 +33,8 @@ type ActiveServiceCustomersRow struct {
 	RecurringCustomerCount int64
 }
 
-// Active Services footer: distinct customers overall and with a recurring service. A customer with
-// several services counts once, so these can't be summed from the per-service rows.
+// Active Services footer: distinct customers overall and with a recurring visit (as in ActiveServices).
+// A customer with several services counts once, so these can't be summed from the per-service rows.
 func (q *Queries) ActiveServiceCustomers(ctx context.Context, arg ActiveServiceCustomersParams) (ActiveServiceCustomersRow, error) {
 	row := q.db.QueryRow(ctx, activeServiceCustomers, arg.Statuses, arg.StartAt, arg.EndAt)
 	var i ActiveServiceCustomersRow
@@ -46,6 +47,7 @@ SELECT sv.id                               AS service_id,
        sv.name                             AS service_name,
        coalesce(sv.is_recurring, false)::boolean AS is_recurring,
        count(*)::bigint                    AS count,
+       count(*) FILTER (WHERE coalesce(sv.is_recurring, false) OR j.recurring_plan_id IS NOT NULL)::bigint AS recurring_count,
        count(DISTINCT j.customer_id)::bigint AS customer_count,
        coalesce(sum(j.total), 0)::numeric  AS amount
   FROM jobs j
@@ -63,16 +65,18 @@ type ActiveServicesParams struct {
 }
 
 type ActiveServicesRow struct {
-	ServiceID     *int64
-	ServiceName   *string
-	IsRecurring   bool
-	Count         int64
-	CustomerCount int64
-	Amount        decimal.Decimal
+	ServiceID      *int64
+	ServiceName    *string
+	IsRecurring    bool
+	Count          int64
+	RecurringCount int64
+	CustomerCount  int64
+	Amount         decimal.Decimal
 }
 
 // Active Services: jobs in the given statuses grouped by service. A NULL service is the "No service" row.
-// count is visits (jobs); customer_count is the distinct customers behind them.
+// count is visits (jobs); customer_count is the distinct customers behind them. A recurring visit is
+// one on a service marked recurring or one fulfilling a recurring plan, so a row can mix both kinds.
 func (q *Queries) ActiveServices(ctx context.Context, arg ActiveServicesParams) ([]ActiveServicesRow, error) {
 	rows, err := q.db.Query(ctx, activeServices, arg.Statuses, arg.StartAt, arg.EndAt)
 	if err != nil {
@@ -87,6 +91,7 @@ func (q *Queries) ActiveServices(ctx context.Context, arg ActiveServicesParams) 
 			&i.ServiceName,
 			&i.IsRecurring,
 			&i.Count,
+			&i.RecurringCount,
 			&i.CustomerCount,
 			&i.Amount,
 		); err != nil {

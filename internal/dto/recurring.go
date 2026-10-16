@@ -182,7 +182,9 @@ type ProjectedInvoiceList struct {
 	Items []ProjectedInvoiceResponse `json:"items"`
 }
 
-// ProjectedEstimateResponse is the estimate covering every visit in the range.
+// ProjectedEstimateResponse is the estimate covering every visit in the range, the period actually
+// priced. Line.Amount (= Subtotal) sums the per-visit rounded invoices, so it can differ from
+// Line.Quantity × Line.UnitPrice by cents.
 type ProjectedEstimateResponse struct {
 	PlanID     int64                 `json:"plan_id"`
 	Range      DateRange             `json:"range"`
@@ -239,11 +241,12 @@ func NewProjectedInvoiceList(r DateRange, invs []model.ProjectedInvoice) Project
 	return ProjectedInvoiceList{Range: r, Items: items}
 }
 
-// NewProjectedEstimateResponse maps a projected estimate.
-func NewProjectedEstimateResponse(r DateRange, e model.ProjectedEstimate) ProjectedEstimateResponse {
+// NewProjectedEstimateResponse maps a projected estimate. Its range is the period actually priced,
+// e.From to the day before the exclusive e.To.
+func NewProjectedEstimateResponse(e model.ProjectedEstimate) ProjectedEstimateResponse {
 	return ProjectedEstimateResponse{
 		PlanID:     e.PlanID,
-		Range:      r,
+		Range:      CustomRange(e.From, e.To.AddDate(0, 0, -1)),
 		VisitCount: e.VisitCount,
 		Line:       newProjectedLine(e.Line),
 		Subtotal:   Money(e.Subtotal),

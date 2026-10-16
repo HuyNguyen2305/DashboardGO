@@ -45,7 +45,8 @@ func testSecondaryWidgets(t *testing.T, env testEnv) {
 		var got dto.ActiveServicesResponse
 		env.getJSON(t, "/api/v1/dashboard/active-services", &got)
 
-		// Screenshot: 18 active, 6 recurring, footer $1,371.24 = the Jobs widget's Incomplete row.
+		// Screenshot: 18 active, 6 recurring, footer $1,371.24 = the Jobs widget's open rows
+		// (the seed has no rescheduled or workpool jobs in October, so that is its Incomplete row).
 		assert.Equal(t, dto.ActiveServicesResponse{
 			Range:          october,
 			TotalCount:     18,
@@ -56,9 +57,9 @@ func testSecondaryWidgets(t *testing.T, env testEnv) {
 			TotalAmount:            "1371.24",
 			Rows: []dto.ServiceRow{
 				{ServiceID: ptr(env.serviceID(t, "Blank Service")), Name: "Blank Service", Count: 8, CustomerCount: 1, Amount: "587.52", Percent: 42.85},
-				{ServiceID: ptr(env.serviceID(t, "Bi-Monthly Service")), Name: "Bi-Monthly Service", IsRecurring: true, Count: 4, CustomerCount: 1, Amount: "293.76", Percent: 21.42},
+				{ServiceID: ptr(env.serviceID(t, "Bi-Monthly Service")), Name: "Bi-Monthly Service", IsRecurring: true, Count: 4, RecurringCount: 4, CustomerCount: 1, Amount: "293.76", Percent: 21.42},
 				{ServiceID: ptr(env.serviceID(t, "Initial Service")), Name: "Initial Service", Count: 3, CustomerCount: 1, Amount: "266.90", Percent: 19.46},
-				{ServiceID: ptr(env.serviceID(t, "Every 21 Days")), Name: "Every 21 Days", IsRecurring: true, Count: 2, CustomerCount: 1, Amount: "146.88", Percent: 10.71},
+				{ServiceID: ptr(env.serviceID(t, "Every 21 Days")), Name: "Every 21 Days", IsRecurring: true, Count: 2, RecurringCount: 2, CustomerCount: 1, Amount: "146.88", Percent: 10.71},
 				{ServiceID: nil, Name: "No service", Count: 1, CustomerCount: 1, Amount: "76.18", Percent: 5.56},
 			},
 		}, got)

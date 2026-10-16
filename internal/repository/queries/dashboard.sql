@@ -149,11 +149,13 @@ SELECT s.id                                  AS staff_id,
 
 -- name: ActiveServices :many
 -- Active Services: jobs in the given statuses grouped by service. A NULL service is the "No service" row.
--- count is visits (jobs); customer_count is the distinct customers behind them.
+-- count is visits (jobs); customer_count is the distinct customers behind them. A recurring visit is
+-- one on a service marked recurring or one fulfilling a recurring plan, so a row can mix both kinds.
 SELECT sv.id                               AS service_id,
        sv.name                             AS service_name,
        coalesce(sv.is_recurring, false)::boolean AS is_recurring,
        count(*)::bigint                    AS count,
+       count(*) FILTER (WHERE coalesce(sv.is_recurring, false) OR j.recurring_plan_id IS NOT NULL)::bigint AS recurring_count,
        count(DISTINCT j.customer_id)::bigint AS customer_count,
        coalesce(sum(j.total), 0)::numeric  AS amount
   FROM jobs j
@@ -164,10 +166,11 @@ SELECT sv.id                               AS service_id,
  ORDER BY amount DESC, sv.name NULLS LAST;
 
 -- name: ActiveServiceCustomers :one
--- Active Services footer: distinct customers overall and with a recurring service. A customer with
--- several services counts once, so these can't be summed from the per-service rows.
-SELECT count(DISTINCT j.customer_id)::bigint                                AS customer_count,
-       count(DISTINCT j.customer_id) FILTER (WHERE sv.is_recurring)::bigint AS recurring_customer_count
+-- Active Services footer: distinct customers overall and with a recurring visit (as in ActiveServices).
+-- A customer with several services counts once, so these can't be summed from the per-service rows.
+SELECT count(DISTINCT j.customer_id)::bigint AS customer_count,
+       count(DISTINCT j.customer_id)
+         FILTER (WHERE coalesce(sv.is_recurring, false) OR j.recurring_plan_id IS NOT NULL)::bigint AS recurring_customer_count
   FROM jobs j
   LEFT JOIN services sv ON sv.id = j.service_id
  WHERE j.status = ANY(@statuses::text[])

@@ -138,10 +138,10 @@ func TestProjectedEstimateDefaultsToTwelveMonths(t *testing.T) {
 		{Index: 0, Date: time.Date(2026, 10, 5, 0, 0, 0, 0, loc)},
 		{Index: 1, Date: time.Date(2026, 10, 19, 0, 0, 0, 0, loc)},
 	}
+	window := model.Window{From: time.Date(2026, 10, 15, 0, 0, 0, 0, loc), To: time.Date(2027, 10, 15, 0, 0, 0, 0, loc)}
 	svc := mocks.NewMockRecurringService(t)
-	svc.EXPECT().ProjectedEstimate(mock.Anything, int64(3),
-		windowIs(time.Date(2026, 10, 15, 0, 0, 0, 0, loc), time.Date(2027, 10, 15, 0, 0, 0, 0, loc))).
-		Return(model.ProjectEstimate(samplePlan(t), occs, model.Window{}), nil).Once()
+	svc.EXPECT().ProjectedEstimate(mock.Anything, int64(3), windowIs(window.From, window.To)).
+		Return(model.ProjectEstimate(samplePlan(t), occs, window), nil).Once()
 
 	w := do(t, recurringRouter(t, svc), http.MethodGet, "/api/v1/recurring-plans/3/projected-estimate", "")
 
@@ -153,6 +153,21 @@ func TestProjectedEstimateDefaultsToTwelveMonths(t *testing.T) {
 		"line": {"description": "Lawn care", "quantity": "2.00", "unit_price": "50.00", "amount": "100.00"},
 		"subtotal": "100.00", "tax": "10.00", "total": "110.00", "kind": "projected"
 	}`, w.Body.String())
+}
+
+func TestProjectedEstimateEchoesCoveredPeriod(t *testing.T) {
+	loc := hcm(t)
+	// The request starts before today (Oct 15); the service prices from today on.
+	requested := model.Window{From: time.Date(2026, 10, 1, 0, 0, 0, 0, loc), To: time.Date(2027, 1, 1, 0, 0, 0, 0, loc)}
+	covered := model.Window{From: time.Date(2026, 10, 15, 0, 0, 0, 0, loc), To: requested.To}
+	svc := mocks.NewMockRecurringService(t)
+	svc.EXPECT().ProjectedEstimate(mock.Anything, int64(3), windowIs(requested.From, requested.To)).
+		Return(model.ProjectEstimate(samplePlan(t), nil, covered), nil).Once()
+
+	w := do(t, recurringRouter(t, svc), http.MethodGet, "/api/v1/recurring-plans/3/projected-estimate?from=2026-10-01&to=2026-12-31", "")
+
+	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
+	assert.Contains(t, w.Body.String(), `"range":{"preset":"custom","start":"2026-10-15","end":"2026-12-31"}`)
 }
 
 func TestCustomerOccurrences(t *testing.T) {

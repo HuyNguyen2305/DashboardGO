@@ -45,7 +45,7 @@ func TestActiveServicesEndpoint(t *testing.T) {
 	svc := mocks.NewMockDashboardService(t)
 	svc.EXPECT().ActiveServices(mock.Anything, presetIs(daterange.Last7Days)).Return(model.ActiveServices{
 		Rows: []model.ServiceRow{
-			{ServiceID: ptr(int64(3)), Name: "Bi-Monthly Service", IsRecurring: true, Count: 4, CustomerCount: 2, Amount: decimal.RequireFromString("260"), Percent: 100},
+			{ServiceID: ptr(int64(3)), Name: "Bi-Monthly Service", IsRecurring: true, Count: 4, RecurringCount: 4, CustomerCount: 2, Amount: decimal.RequireFromString("260"), Percent: 100},
 			{ServiceID: nil, Name: "No service", Count: 1, Amount: decimal.Zero, Percent: 0},
 		},
 		TotalCount: 5, RecurringCount: 4, TotalAmount: decimal.RequireFromString("260"),
@@ -58,8 +58,8 @@ func TestActiveServicesEndpoint(t *testing.T) {
 		"range": {"preset": "last_7_days", "start": "2026-10-06", "end": "2026-10-12"},
 		"total_count": 5, "recurring_count": 4, "customer_count": 3, "recurring_customer_count": 2, "total_amount": "260.00",
 		"rows": [
-			{"service_id": 3, "name": "Bi-Monthly Service", "is_recurring": true, "count": 4, "customer_count": 2, "amount": "260.00", "percent": 100},
-			{"service_id": null, "name": "No service", "is_recurring": false, "count": 1, "customer_count": 0, "amount": "0.00", "percent": 0}
+			{"service_id": 3, "name": "Bi-Monthly Service", "is_recurring": true, "count": 4, "recurring_count": 4, "customer_count": 2, "amount": "260.00", "percent": 100},
+			{"service_id": null, "name": "No service", "is_recurring": false, "count": 1, "recurring_count": 0, "customer_count": 0, "amount": "0.00", "percent": 0}
 		]
 	}`, body)
 }

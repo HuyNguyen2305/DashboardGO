@@ -186,12 +186,14 @@ func (r *RecurringRepository) SetPlanStatus(ctx context.Context, id int64, statu
 	return r.reread(ctx, q, id)
 }
 
-// PlanHasLinkedJobs reports whether any job fulfils a visit of the plan.
-func (r *RecurringRepository) PlanHasLinkedJobs(ctx context.Context, id int64) (bool, error) {
+// PlanHasLinkedJobsFrom reports whether a job fulfils a visit of the plan dated on or after from.
+func (r *RecurringRepository) PlanHasLinkedJobsFrom(ctx context.Context, id int64, from time.Time) (bool, error) {
 	ctx, cancel := context.WithTimeout(ctx, r.timeout)
 	defer cancel()
 
-	has, err := r.queries(ctx).RecurringPlanHasLinkedJobs(ctx, id)
+	has, err := r.queries(ctx).RecurringPlanHasLinkedJobsFrom(ctx, db.RecurringPlanHasLinkedJobsFromParams{
+		ID: id, FromDate: toDBDate(from),
+	})
 	if err != nil {
 		return false, fmt.Errorf("check plan linked jobs: %w", err)
 	}

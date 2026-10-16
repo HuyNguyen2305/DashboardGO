@@ -33,7 +33,7 @@ var (
 	ErrCustomerNotFound  = errors.New("customer not found")
 	ErrPlanCanceled      = errors.New("recurring plan is canceled")
 	ErrInvalidTransition = errors.New("invalid plan status transition")
-	ErrCadenceLocked     = errors.New("plan cadence is locked by linked jobs")
+	ErrCadenceLocked     = errors.New("plan cadence is locked by upcoming linked jobs")
 	ErrInvalidReference  = errors.New("invalid reference")
 	ErrWindowTooLarge    = errors.New("window too large")
 	// ErrInvalidPlan means a plan field is out of range for storage.
@@ -72,10 +72,12 @@ type ProjectedInvoice struct {
 
 // ProjectedEstimate is the estimate covering every visit of a plan in a window.
 type ProjectedEstimate struct {
-	PlanID               int64
-	From, To             time.Time // half-open period actually covered
-	VisitCount           int
-	Line                 ProjectedLine // Quantity = VisitCount × plan.Quantity
+	PlanID     int64
+	From, To   time.Time // half-open period actually covered
+	VisitCount int
+	// Quantity = VisitCount × plan.Quantity. Amount (= Subtotal) sums the per-visit rounded
+	// invoices, so it can differ from Quantity × UnitPrice by cents.
+	Line                 ProjectedLine
 	Subtotal, Tax, Total decimal.Decimal
 }
 

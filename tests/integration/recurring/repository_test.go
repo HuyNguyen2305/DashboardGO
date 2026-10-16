@@ -203,7 +203,7 @@ func TestUpdatePlanAndSetStatus(t *testing.T) {
 	assert.ErrorIs(t, err, model.ErrInvalidReference)
 }
 
-func TestPlanHasLinkedJobs(t *testing.T) {
+func TestPlanHasLinkedJobsFrom(t *testing.T) {
 	e := newEnv(t)
 	ctx := context.Background()
 	cust := e.customer(t, "C")
@@ -212,10 +212,13 @@ func TestPlanHasLinkedJobs(t *testing.T) {
 	p2 := e.seedPlan(t, planOpts{customerID: cust, serviceID: svc})
 	e.job(t, cust, p1.ID, "2026-10-05", time.Date(2026, 10, 5, 2, 0, 0, 0, time.UTC))
 
-	has, err := e.repo.PlanHasLinkedJobs(ctx, p1.ID)
+	has, err := e.repo.PlanHasLinkedJobsFrom(ctx, p1.ID, e.date(2026, time.October, 5))
 	require.NoError(t, err)
-	assert.True(t, has)
-	has, err = e.repo.PlanHasLinkedJobs(ctx, p2.ID)
+	assert.True(t, has, "a visit on the from date counts")
+	has, err = e.repo.PlanHasLinkedJobsFrom(ctx, p1.ID, e.date(2026, time.October, 6))
+	require.NoError(t, err)
+	assert.False(t, has, "a visit before from does not")
+	has, err = e.repo.PlanHasLinkedJobsFrom(ctx, p2.ID, e.date(2026, time.October, 5))
 	require.NoError(t, err)
 	assert.False(t, has)
 }

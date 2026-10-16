@@ -217,6 +217,8 @@ func TestRecurringProjectedEstimate(t *testing.T) {
 			require.NoError(t, err)
 			assert.Equal(t, tt.wantVisits, got.VisitCount)
 			assert.True(t, decimal.RequireFromString(tt.wantTotal).Equal(got.Total), got.Total.String())
+			assert.True(t, got.From.Equal(w.From), "the window starts today, so the priced period does too")
+			assert.True(t, got.To.Equal(w.To))
 			if tt.wantVisits == 0 {
 				assert.True(t, got.Subtotal.IsZero())
 				assert.True(t, got.Tax.IsZero())
@@ -226,14 +228,27 @@ func TestRecurringProjectedEstimate(t *testing.T) {
 }
 
 func TestRecurringProjectedEstimateClampsAndCaps(t *testing.T) {
+	t.Run("window starting before today is clamped", func(t *testing.T) {
+		svc, repo := newRecurringSvc(t)
+		// Weekly from Oct 1: Oct 1 and 8 are past; Oct 15, 22 and 29 are priced.
+		plan := projPlan(t, 1, model.PlanStatusActive, recurrence.Week, 1, projDay(t, 2026, time.October, 1), nil)
+		repo.EXPECT().GetPlan(mock.Anything, int64(1)).Return(plan, nil)
+		got, err := svc.ProjectedEstimate(context.Background(), 1, model.Window{From: projDay(t, 2026, time.October, 1), To: projDay(t, 2026, time.November, 1)})
+		require.NoError(t, err)
+		assert.Equal(t, 3, got.VisitCount)
+		assert.True(t, got.From.Equal(projDay(t, 2026, time.October, 15)), "the priced period starts today: %s", got.From)
+		assert.True(t, got.To.Equal(projDay(t, 2026, time.November, 1)))
+	})
 	t.Run("past window is empty", func(t *testing.T) {
 		svc, repo := newRecurringSvc(t)
 		plan := projPlan(t, 1, model.PlanStatusActive, recurrence.Week, 1, projDay(t, 2026, time.January, 1), nil)
 		repo.EXPECT().GetPlan(mock.Anything, int64(1)).Return(plan, nil)
-		got, err := svc.ProjectedEstimate(context.Background(), 1, model.Window{From: projDay(t, 2026, time.January, 1), To: projDay(t, 2026, time.February, 1)})
+		w := model.Window{From: projDay(t, 2026, time.January, 1), To: projDay(t, 2026, time.February, 1)}
+		got, err := svc.ProjectedEstimate(context.Background(), 1, w)
 		require.NoError(t, err)
 		assert.Zero(t, got.VisitCount)
 		assert.True(t, got.Total.IsZero())
+		assert.Equal(t, w, model.Window{From: got.From, To: got.To}, "nothing priced: the requested window is kept, never inverted")
 	})
 	t.Run("25 month window is too large", func(t *testing.T) {
 		svc, repo := newRecurringSvc(t)

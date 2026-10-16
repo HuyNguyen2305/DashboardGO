@@ -51,7 +51,8 @@ func TestActiveServices(t *testing.T) {
 	r, err := resolver(t).Preset(daterange.ThisMonth)
 	require.NoError(t, err)
 
-	q := model.ServicesQuery{Start: r.Start, End: r.End, Statuses: []string{"incomplete"}}
+	// Open jobs: incomplete, rescheduled and in the workpool.
+	q := model.ServicesQuery{Start: r.Start, End: r.End, Statuses: []string{"incomplete", "reschedule", "workpool"}}
 	repo := mocks.NewMockDashboardRepository(t)
 	expectSnapshot(repo)
 	repo.EXPECT().ActiveServiceCustomers(mock.Anything, q).
@@ -59,18 +60,21 @@ func TestActiveServices(t *testing.T) {
 	repo.EXPECT().ActiveServices(mock.Anything, q).Return([]model.ServiceRow{
 		{ServiceID: ptr(int64(1)), Name: "Blank Service", Count: 4, CustomerCount: 2, Amount: dec("594.24")},
 		{ServiceID: ptr(int64(2)), Name: "Initial Service", Count: 3, Amount: dec("285.00")},
-		{ServiceID: ptr(int64(3)), Name: "Bi-Monthly Service", IsRecurring: true, Count: 4, Amount: dec("260.00")},
-		{ServiceID: ptr(int64(4)), Name: "Every 21 Days", IsRecurring: true, Count: 2, Amount: dec("120.00")},
-		{ServiceID: ptr(int64(5)), Name: "Blank Service 123", Count: 4, Amount: dec("112.00")},
+		{ServiceID: ptr(int64(3)), Name: "Bi-Monthly Service", IsRecurring: true, Count: 4, RecurringCount: 4, Amount: dec("260.00")},
+		{ServiceID: ptr(int64(4)), Name: "Every 21 Days", IsRecurring: true, Count: 2, RecurringCount: 2, Amount: dec("120.00")},
+		// Not a recurring service, but one of its visits fulfils a recurring plan.
+		{ServiceID: ptr(int64(5)), Name: "Blank Service 123", Count: 4, RecurringCount: 1, Amount: dec("112.00")},
 		{ServiceID: nil, Count: 1, Amount: dec("0.00")},
 	}, nil).Once()
 
 	w, err := service.NewDashboardService(repo).ActiveServices(context.Background(), r)
 	require.NoError(t, err)
 
-	// Screenshot: 18 active, 6 recurring, $1,371.24, Blank Service 43.34%.
+	// Screenshot: 18 active, 6 recurring, $1,371.24, Blank Service 43.34%; plus the one plan visit.
 	assert.Equal(t, int64(18), w.TotalCount)
-	assert.Equal(t, int64(6), w.RecurringCount)
+	assert.Equal(t, int64(7), w.RecurringCount, "the rows' recurring visits: 4 + 2 + 1")
+	assert.Equal(t, int64(1), w.Rows[4].RecurringCount)
+	assert.False(t, w.Rows[4].IsRecurring, "the catalogue flag is passed through unchanged")
 	assert.Equal(t, model.ServiceCustomers{CustomerCount: 9, RecurringCustomerCount: 3}, w.ServiceCustomers)
 	assert.Equal(t, int64(2), w.Rows[0].CustomerCount)
 	assert.True(t, w.TotalAmount.Equal(dec("1371.24")), w.TotalAmount.String())

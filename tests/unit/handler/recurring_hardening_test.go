@@ -55,7 +55,7 @@ func TestRecurringErrorMessagesStripWrapPrefixes(t *testing.T) {
 			errors.Join(fmt.Errorf("lock plan: %w", model.ErrPlanNotFound), errors.New("rollback: conn busy on 10.0.0.1")),
 			http.StatusNotFound, "recurring plan not found",
 		},
-		{"conflict", fmt.Errorf("update plan 3: %w", model.ErrCadenceLocked), http.StatusConflict, "plan cadence is locked by linked jobs"},
+		{"conflict", fmt.Errorf("update plan 3: %w", model.ErrCadenceLocked), http.StatusConflict, "plan cadence is locked by upcoming linked jobs"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

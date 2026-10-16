@@ -3,9 +3,11 @@
 package recurring_test
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -116,12 +118,50 @@ func TestAPIPatchCadenceLockedByLinkedJob(t *testing.T) {
 	code, body := call(t, srv, http.MethodPatch, path, map[string]any{"interval_count": 2})
 	require.Equal(t, http.StatusOK, code, "no linked jobs yet: "+fmt.Sprint(body))
 
+	// Today is Oct 15: a job on a past visit can't be orphaned, since past visits are never projected.
 	e.job(t, cust, plan.ID, "2026-10-05", e.date(2026, 10, 5))
-
 	code, body = call(t, srv, http.MethodPatch, path, map[string]any{"interval_count": 3})
+	require.Equal(t, http.StatusOK, code, "only past visits are booked: "+fmt.Sprint(body))
+
+	// A job on an upcoming visit locks the cadence.
+	e.job(t, cust, plan.ID, "2026-10-19", e.date(2026, 10, 19))
+	code, body = call(t, srv, http.MethodPatch, path, map[string]any{"interval_count": 4})
 	assert.Equal(t, http.StatusConflict, code, body)
 	code, body = call(t, srv, http.MethodPatch, path, map[string]any{"unit_price": "60.00"})
 	assert.Equal(t, http.StatusOK, code, "price stays editable: "+fmt.Sprint(body))
+}
+
+func TestAPIEndDateAndCancelKeepLinkedJobs(t *testing.T) {
+	e := newEnv(t)
+	srv := e.api(t)
+	cust := e.customer(t, "Ann")
+	// Weekly on Mondays from Oct 5; the Nov 2 visit is already booked.
+	plan := e.seedPlan(t, planOpts{customerID: cust, serviceID: e.service(t, "Lawn care", "50.00")})
+	jobID := e.job(t, cust, plan.ID, "2026-11-02", e.date(2026, 11, 2))
+	path := fmt.Sprintf("%s/%d", plansPath, plan.ID)
+	stillLinked := func(t *testing.T) {
+		t.Helper()
+		var planID int64
+		var occurrence time.Time
+		require.NoError(t, e.pool.QueryRow(context.Background(),
+			`SELECT recurring_plan_id, occurrence_date FROM jobs WHERE id = $1`, jobID).Scan(&planID, &occurrence))
+		assert.Equal(t, plan.ID, planID)
+		assert.Equal(t, "2026-11-02", occurrence.Format(time.DateOnly))
+	}
+
+	// end_date is always editable, even before a booked visit.
+	code, body := call(t, srv, http.MethodPatch, path, map[string]any{"end_date": "2026-10-31"})
+	require.Equal(t, http.StatusOK, code, body)
+	code, occ := call(t, srv, http.MethodGet, path+"/occurrences?from=2026-10-15&to=2026-11-30", nil)
+	require.Equal(t, http.StatusOK, code, occ)
+	assert.Equal(t, []string{fmt.Sprintf("%d/2026-10-19", plan.ID), fmt.Sprintf("%d/2026-10-26", plan.ID)},
+		itemDates(t, occ), "the plan stops at the new end")
+	stillLinked(t)
+
+	// Canceling leaves the booked job alone too.
+	code, body = call(t, srv, http.MethodPost, path+"/cancel", map[string]any{})
+	require.Equal(t, http.StatusOK, code, body)
+	stillLinked(t)
 }
 
 func TestAPICrossCustomerLocationRejected(t *testing.T) {

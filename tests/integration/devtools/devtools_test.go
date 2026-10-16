@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"testing"
 	"time"
 
@@ -24,6 +25,7 @@ import (
 	"dashboardgo/internal/dto"
 	"dashboardgo/internal/handler"
 	"dashboardgo/internal/migrate"
+	"dashboardgo/internal/model"
 	"dashboardgo/internal/repository"
 	"dashboardgo/internal/service"
 	"dashboardgo/tests/integration/testdb"
@@ -181,10 +183,17 @@ func TestDemoSeedServesConsistentDashboard(t *testing.T) {
 			get("jobs?range="+rng, &jobs)
 			var services dto.ActiveServicesResponse
 			get("active-services?range="+rng, &services)
-			incomplete := jobs.Rows[0]
-			require.Equal(t, "incomplete", incomplete.Key)
-			assert.Equal(t, incomplete.Amount, services.TotalAmount, "Active Services = Jobs incomplete row")
-			assert.Equal(t, incomplete.Count, services.TotalCount)
+			// Active Services counts the open jobs: the Jobs rows for model.ActiveJobStatuses.
+			openAmount, openCount := decimal.Zero, int64(0)
+			for _, row := range jobs.Rows {
+				if slices.Contains(model.ActiveJobStatuses, row.Key) {
+					amount, err := decimal.NewFromString(row.Amount)
+					require.NoError(t, err)
+					openAmount, openCount = openAmount.Add(amount), openCount+row.Count
+				}
+			}
+			assert.Equal(t, openAmount.StringFixed(2), services.TotalAmount, "Active Services = Jobs open rows")
+			assert.Equal(t, openCount, services.TotalCount)
 
 			// Jobs Completed counts by completion time up to now; the Jobs widget counts by schedule,
 			// so the two differ by design.

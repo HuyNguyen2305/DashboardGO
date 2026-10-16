@@ -383,12 +383,20 @@ func (q *Queries) ListRecurringPlans(ctx context.Context, arg ListRecurringPlans
 	return items, nil
 }
 
-const recurringPlanHasLinkedJobs = `-- name: RecurringPlanHasLinkedJobs :one
-SELECT EXISTS (SELECT 1 FROM jobs WHERE recurring_plan_id = $1::bigint)::boolean
+const recurringPlanHasLinkedJobsFrom = `-- name: RecurringPlanHasLinkedJobsFrom :one
+SELECT EXISTS (
+    SELECT 1 FROM jobs WHERE recurring_plan_id = $1::bigint AND occurrence_date >= $2::date
+)::boolean
 `
 
-func (q *Queries) RecurringPlanHasLinkedJobs(ctx context.Context, id int64) (bool, error) {
-	row := q.db.QueryRow(ctx, recurringPlanHasLinkedJobs, id)
+type RecurringPlanHasLinkedJobsFromParams struct {
+	ID       int64
+	FromDate time.Time
+}
+
+// Whether a job fulfils a visit of the plan dated on or after from_date.
+func (q *Queries) RecurringPlanHasLinkedJobsFrom(ctx context.Context, arg RecurringPlanHasLinkedJobsFromParams) (bool, error) {
+	row := q.db.QueryRow(ctx, recurringPlanHasLinkedJobsFrom, arg.ID, arg.FromDate)
 	var column_1 bool
 	err := row.Scan(&column_1)
 	return column_1, err

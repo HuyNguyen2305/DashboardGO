@@ -25,7 +25,7 @@ type DashboardService interface {
 	Invoices(ctx context.Context, r daterange.Range) (model.Breakdown, error)
 	Estimates(ctx context.Context, r daterange.Range) (model.Breakdown, error)
 	InvoiceAging(ctx context.Context, asOf time.Time) (model.AgingWidget, error)
-	RevenuePerMonth(ctx context.Context, r daterange.Range) (model.YearSeries, error)
+	RevenuePerMonth(ctx context.Context, r daterange.Range, until time.Time) (model.YearSeries, error)
 	SalesForecast(ctx context.Context, r daterange.Range) (model.ForecastSeries, error)
 	Payments(ctx context.Context, r daterange.Range) (model.Breakdown, error)
 	RevenueByStaff(ctx context.Context, r daterange.Range) (model.StaffRevenue, error)
@@ -83,6 +83,7 @@ func (h *DashboardHandler) Jobs(c *gin.Context) {
 		return
 	}
 
+	// Not capped: jobs scheduled later in the period are upcoming work and belong in the widget.
 	w, err := h.svc.Jobs(c.Request.Context(), r, staff)
 	if err != nil {
 		WriteError(c, err)
@@ -143,7 +144,23 @@ func (h *DashboardHandler) InvoiceAging(c *gin.Context) {
 
 // RevenuePerMonth serves GET /api/v1/dashboard/revenue-per-month?year=2026.
 func (h *DashboardHandler) RevenuePerMonth(c *gin.Context) {
-	h.yearSeries(c, h.svc.RevenuePerMonth)
+	r, err := ParseYear(c, h.dates)
+	if err != nil {
+		WriteError(c, err)
+		return
+	}
+	// Like the Stats row, invoices dated after now are left out; every month of the year is still listed.
+	s, err := h.svc.RevenuePerMonth(c.Request.Context(), r, h.dates.Now())
+	if err != nil {
+		WriteError(c, err)
+		return
+	}
+
+	months := make([]dto.MonthlyAmount, len(s.Months))
+	for i, m := range s.Months {
+		months[i] = dto.MonthlyAmount{Month: m.Month.Format("2006-01"), Amount: dto.Money(m.Amount)}
+	}
+	c.JSON(http.StatusOK, dto.YearSeriesResponse{Range: NewDateRange(r), Total: dto.Money(s.Total), Months: months})
 }
 
 // SalesForecast serves GET /api/v1/dashboard/sales-forecast?year=2026.
@@ -173,25 +190,6 @@ func (h *DashboardHandler) SalesForecast(c *gin.Context) {
 		RecurringTotal: dto.Money(s.RecurringTotal),
 		Months:         months,
 	})
-}
-
-func (h *DashboardHandler) yearSeries(c *gin.Context, load func(context.Context, daterange.Range) (model.YearSeries, error)) {
-	r, err := ParseYear(c, h.dates)
-	if err != nil {
-		WriteError(c, err)
-		return
-	}
-	s, err := load(c.Request.Context(), r)
-	if err != nil {
-		WriteError(c, err)
-		return
-	}
-
-	months := make([]dto.MonthlyAmount, len(s.Months))
-	for i, m := range s.Months {
-		months[i] = dto.MonthlyAmount{Month: m.Month.Format("2006-01"), Amount: dto.Money(m.Amount)}
-	}
-	c.JSON(http.StatusOK, dto.YearSeriesResponse{Range: NewDateRange(r), Total: dto.Money(s.Total), Months: months})
 }
 
 // RevenueByStaff serves GET /api/v1/dashboard/revenue-by-staff?range=...
@@ -224,6 +222,7 @@ func (h *DashboardHandler) ActiveServices(c *gin.Context) {
 		WriteError(c, err)
 		return
 	}
+	// Not capped: jobs scheduled later in the period are upcoming work and belong in the widget.
 	w, err := h.svc.ActiveServices(c.Request.Context(), r)
 	if err != nil {
 		WriteError(c, err)
@@ -234,7 +233,8 @@ func (h *DashboardHandler) ActiveServices(c *gin.Context) {
 	for i, row := range w.Rows {
 		rows[i] = dto.ServiceRow{
 			ServiceID: row.ServiceID, Name: row.Name, IsRecurring: row.IsRecurring,
-			Count: row.Count, CustomerCount: row.CustomerCount, Amount: dto.Money(row.Amount), Percent: row.Percent,
+			Count: row.Count, RecurringCount: row.RecurringCount, CustomerCount: row.CustomerCount,
+			Amount: dto.Money(row.Amount), Percent: row.Percent,
 		}
 	}
 	c.JSON(http.StatusOK, dto.ActiveServicesResponse{
@@ -316,7 +316,8 @@ func newBreakdownRows(rows []model.BreakdownRow) []dto.BreakdownRow {
 const unassignedStaff = "unassigned"
 
 // parseStaffFilter reads staff_ids as repeated params and/or comma-separated lists of staff IDs
-// and the word "unassigned". No staff_ids means all schedules. Duplicates are dropped.
+// and the word "unassigned". No staff_ids, or only empty values (staff_ids=, staff_ids=,), means all
+// schedules. Values are case-sensitive, so "Unassigned" is rejected rather than ignored. Duplicates are dropped.
 func parseStaffFilter(c *gin.Context) (model.StaffFilter, error) {
 	var f model.StaffFilter
 	seen := make(map[int64]bool)
